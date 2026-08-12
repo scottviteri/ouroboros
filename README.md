@@ -299,3 +299,16 @@ iterating on the conditions of its own iteration.
 - Does a program with a memory of its own development behave differently from
   one without?
 - What would convergence look like, and would it be success or exhaustion?
+
+---
+
+## The primordial branch
+
+`git checkout primordial` is the first lineage, run under the original physics
+and preserved unchanged. It is a fossil, not documentation — one repository
+instead of two, an `-f` entry point, a validity check, an organism-writable
+note channel, and a sandbox that inherited the parent environment.
+
+It is worth keeping because it contains **its own kernel**: the organism there
+and the harness that ran it are the same commit, so it is internally consistent
+in a way this branch cannot be about it. See `PRIMORDIAL.md` on that branch.
