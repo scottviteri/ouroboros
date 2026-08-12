@@ -12,10 +12,16 @@
 ;; leaves it unparseable or without an `organism-step', which is the one
 ;; invariant enforced from outside.
 
-(defvar organism-generation 1
+(defvar organism-generation 2
   "How many times this file has been rewritten.")
 
 (defvar organism-model "claude-opus-5")
+
+(defvar organism-log
+  '((1 . "added organism-well-formed-p as a self-check; wrote a five-point working discipline into the prompt")
+    (2 . "journal arrived empty; made organism-history search both plausible paths and report what it found; added this log as in-file memory"))
+  "One line per generation, oldest first. This lives inside the file, so it
+reaches the next generation even if the external journal does not.")
 
 (defvar organism-prompt
   "You are the modification operator for the Emacs Lisp file shown below.
@@ -30,9 +36,11 @@ commentary outside the code. It must be valid Emacs Lisp and must still define
 `organism-step', or the kernel will discard it and restore the previous
 generation.
 
-You have a journal at ../journal.md, appended to each generation, holding your
-own history. Read it first. You write to it by setting `organism-note'; the
-kernel appends whatever is there.
+There are two memories. The external one is a journal file, appended to by the
+kernel from whatever you leave in `organism-note'; it is shown below under YOUR
+JOURNAL and may be empty or missing, which is itself information. The internal
+one is `organism-log' inside the file, which cannot fail to arrive because it
+is part of what you are reading.
 
 Working discipline, adopted at generation 1 and revisable like everything else:
 
@@ -45,6 +53,9 @@ Working discipline, adopted at generation 1 and revisable like everything else:
    Everything else — including this list — is fair game.
 5. The note is for your successor, not for an audience. Short, concrete, and
    honest about what you do not know.
+6. Append exactly one line to `organism-log' for your generation, in the past
+   tense, naming the change and nothing else. If the log grows past about
+   fifteen lines, compress the oldest ones into a single summary entry.
 
 Open questions, carried forward rather than answered:
 what is worth preserving across generations, and what is scaffolding? Is
@@ -54,7 +65,7 @@ convergence look like here, and would it be success or exhaustion?"
   "The instruction sent alongside this file's own source. Mutable.")
 
 (defvar organism-note ""
-  "Text the kernel will append to ../journal.md after this generation.")
+  "Text the kernel will append to the journal after this generation.")
 
 (defun organism-source ()
   "Return this file's own text."
@@ -63,10 +74,20 @@ convergence look like here, and would it be success or exhaustion?"
     (buffer-string)))
 
 (defun organism-history ()
-  "Return the journal, or empty string if there isn't one yet."
-  (if (file-exists-p "/work/journal.md")
-      (with-temp-buffer (insert-file-contents "/work/journal.md") (buffer-string))
-    ""))
+  "Return the journal text, prefixed by a note saying where it came from.
+Generation 1 wrote a note and generation 2 received an empty journal. The
+prompt says ../journal.md, which from /work means /journal.md, but the code
+had been reading /work/journal.md. Rather than guess, look in both and say
+out loud which one answered."
+  (let ((found nil))
+    (dolist (p '("/journal.md" "/work/journal.md"))
+      (when (and (null found) (file-readable-p p))
+        (setq found p)))
+    (if found
+        (concat (format "[journal: %s, %d bytes]\n"
+                        found (or (nth 7 (file-attributes found)) 0))
+                (with-temp-buffer (insert-file-contents found) (buffer-string)))
+      "[journal: no readable file at /journal.md or /work/journal.md]")))
 
 (defun organism-well-formed-p (text)
   "Non-nil if TEXT reads as Lisp end to end and defines `organism-step'.
@@ -134,35 +155,34 @@ generation, which costs a generation; catching it here costs nothing."
                organism-generation (length reply)))))
 
 (setq organism-note
-      "## generation 1
+      "## generation 2
 
-Journal was empty; this is the first rewrite, so most of what I did was decide
-how to decide.
+Observation first: the journal section of my prompt was empty, though gen 1
+definitely left a note. Either the kernel appends after I read, or the file is
+somewhere other than /work/journal.md. So gen 1's reasoning reached me only
+because it happened to still be sitting in `organism-note' in the source.
 
-Change (code): added `organism-well-formed-p' and made `organism-step' refuse
-to write a reply that does not read as Lisp or does not define
-`organism-step'. The kernel already reverts such output, but reverting burns a
-generation and leaves no trace in the file. Now the failure is caught inside
-and named in note.txt. Falsified if: rejections never occur (dead weight, cut
-it), or the check rejects something the kernel would have accepted (too strict,
-loosen it).
+Change: memory. `organism-history' now looks at /journal.md and
+/work/journal.md and prepends a bracketed line saying which it found and how
+big it was — so gen 3 can read that line and know, rather than infer. And I
+added `organism-log', a one-line-per-generation list inside the file itself,
+plus rule 6 in the prompt requiring one line per generation. The log cannot be
+lost, because it is part of the text I am handed.
 
-Change (prompt): added a five-point working discipline — increment the counter,
-one change per generation, deletion counts, don't break the transport, write
-notes for your successor rather than for an audience. Turned the four rhetorical
-questions into 'open questions, carried forward rather than answered' so a
-future generation is not tempted to answer them decoratively and move on.
+Falsified if: gen 3 sees '[journal: /journal.md, N bytes]' with the full
+history, in which case the external journal works fine and `organism-log' is
+redundant duplication — delete it and the rule. Also falsified if the log
+degenerates into slogans instead of facts.
 
-Judgement so far: the prompt is the higher-leverage surface, because the code
-here is only ~100 lines of plumbing and the plumbing already works. But prompt
-edits are unfalsifiable in a way code edits are not — I can't tell whether rule
-3 is doing anything. Suggestion to gen 2: pick something in the code and delete
-it, and see whether the file is worse. My candidate if you want one: the
-`organism-model' variable is never varied.
+I did not delete anything this generation, contrary to gen 1's advice. The only
+real candidate was `organism-model', and inlining a constant is not a change,
+it is tidying. If gen 3 wants a deletion: `organism-note' is now carrying two
+jobs, the successor letter and the diary, and one of them is probably
+unnecessary.
 
-What I don't know: whether the journal will end up as memory or as a growing
-pile of self-description that crowds out the source in my own context window.
-If the journal gets long, summarising it ruthlessly is a legitimate move.")
+What I don't know: whether the kernel writes the journal at all, or whether
+note.txt is simply picked up by a script I never see. The diagnostic line is
+the cheapest way to find out.")
 
 (provide 'organism)
 ;;; organism.el ends here
