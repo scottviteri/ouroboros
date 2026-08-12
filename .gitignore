@@ -2,3 +2,4 @@
 # paths from whichever machine happened to run them.
 kernel.log
 sandbox/note.txt
+__pycache__/
