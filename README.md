@@ -183,8 +183,35 @@ git checkout <sha> -- sandbox/organism.el
 ```
 
 Requires `bwrap`, `curl`, `emacs`, and `ANTHROPIC_API_KEY` in the GNOME Keyring
-under `service api key ANTHROPIC_API_KEY`. The kernel reads the key and passes
-it into the sandbox as an environment variable; it never lands in a file.
+under `service api key ANTHROPIC_API_KEY` (or, failing the keyring, in the
+environment). The kernel reads the key and passes it into the sandbox as an
+environment variable; it never lands in a file.
+
+---
+
+## The viewer
+
+`viewer/serve.py` is a small web app for stepping through the phylogeny —
+every generation as a git commit, with its source, its diff against the
+parent, its prompt, its journal, and its in-file memory, plus a chat panel
+for asking Claude about whichever generation you are looking at.
+
+```sh
+export ANTHROPIC_API_KEY=...   # only needed for the chat panel
+./viewer/serve.py              # http://127.0.0.1:7777
+```
+
+It has no dependencies beyond Python 3 and git. Step with the arrow keys, the
+slider, or the timeline dots. The "run generation" button invokes `kernel.sh`
+and streams its output; "restore this one" is `git checkout <sha> --
+sandbox/organism.el`, working tree only, exactly as under *Reverting* above.
+The chat sends the selected generation's source, diff, and journal as context;
+set `ANTHROPIC_MODEL` to override the model (default: whatever
+`organism-model` says at that generation).
+
+Like the kernel, the viewer lives outside the sandbox where the organism
+cannot reach it — and unlike the kernel, it never writes into the sandbox
+except when you click.
 
 ---
 

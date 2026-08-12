@@ -33,7 +33,8 @@ STEPS=1
 [ "${1:-}" = "--auto" ] && STEPS=999
 
 KEY=$(secret-tool lookup service api key ANTHROPIC_API_KEY 2>/dev/null)
-[ -n "$KEY" ] || { echo "no ANTHROPIC_API_KEY in the keyring" >&2; exit 1; }
+[ -n "$KEY" ] || KEY="${ANTHROPIC_API_KEY:-}"
+[ -n "$KEY" ] || { echo "no ANTHROPIC_API_KEY in the keyring or environment" >&2; exit 1; }
 
 say() { printf '%s\n' "$*" | tee -a "$LOG"; }
 

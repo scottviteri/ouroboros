@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ouroboros — generation explorer</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9F%B3%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">
+    <span class="mark">⟳</span>
+    <div>
+      <h1>ouroboros</h1>
+      <p class="tagline">generation explorer</p>
+    </div>
+  </div>
+
+  <div class="stepper">
+    <button id="btn-first" class="step-btn" title="first generation (Home)">⏮</button>
+    <button id="btn-prev" class="step-btn" title="previous generation (←)">◀</button>
+    <div class="stepper-center">
+      <div id="gen-title" class="gen-title">loading…</div>
+      <input id="gen-slider" type="range" min="0" max="0" value="0">
+    </div>
+    <button id="btn-next" class="step-btn" title="next generation (→)">▶</button>
+    <button id="btn-last" class="step-btn" title="latest (End)">⏭</button>
+  </div>
+
+  <div class="actions">
+    <button id="btn-run" class="action-btn accent" title="run one generation of kernel.sh">▶ run generation</button>
+    <button id="btn-restore" class="action-btn" title="git checkout this sha -- sandbox/organism.el">↩ restore this one</button>
+  </div>
+</header>
+
+<nav id="timeline" aria-label="generations"></nav>
+
+<main id="layout">
+  <section id="content">
+    <div id="commit-meta" class="commit-meta"></div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="source">source</button>
+      <button class="tab" data-tab="diff">diff</button>
+      <button class="tab" data-tab="prompt">prompt</button>
+      <button class="tab" data-tab="journal">journal</button>
+      <button class="tab" data-tab="memory">memory</button>
+    </div>
+
+    <div id="panes">
+      <div class="pane active" id="pane-source"><pre class="code" id="source-pre"></pre></div>
+      <div class="pane" id="pane-diff"><pre class="code" id="diff-pre"></pre></div>
+      <div class="pane" id="pane-prompt">
+        <p class="pane-note">the contents of <code>organism-prompt</code> at this generation —
+          the instruction the organism sends alongside its own source, and the thing it can rewrite.</p>
+        <pre class="prose" id="prompt-pre"></pre>
+      </div>
+      <div class="pane" id="pane-journal">
+        <p class="pane-note">the external memory — appended by the kernel, lagging one generation
+          behind by construction.</p>
+        <pre class="prose" id="journal-pre"></pre>
+      </div>
+      <div class="pane" id="pane-memory">
+        <p class="pane-note"><code>organism-log</code>, the in-file memory, and
+          <code>organism-note</code>, the letter this generation left for the journal.</p>
+        <h3 class="mem-h">organism-log</h3>
+        <pre class="code" id="log-pre"></pre>
+        <h3 class="mem-h">organism-note</h3>
+        <pre class="prose" id="note-pre"></pre>
+      </div>
+    </div>
+  </section>
+
+  <aside id="chat">
+    <div class="chat-head">
+      <h2>ask claude</h2>
+      <span id="chat-context" class="chat-context"></span>
+      <button id="btn-clear-chat" class="ghost-btn" title="clear conversation">clear</button>
+    </div>
+    <div id="chat-log" class="chat-log">
+      <div class="chat-empty">
+        Ask about the generation you're looking at — what changed, why,
+        whether the prompt is drifting. The selected generation's source,
+        diff and journal are sent as context.
+        <div class="chat-suggestions">
+          <button class="suggestion">What did this generation change, and why?</button>
+          <button class="suggestion">How has organism-prompt drifted from the seed?</button>
+          <button class="suggestion">Is the organism following its own working discipline?</button>
+        </div>
+      </div>
+    </div>
+    <form id="chat-form" class="chat-form">
+      <textarea id="chat-input" rows="2" placeholder="ask about this generation…  (Enter to send, Shift+Enter for newline)"></textarea>
+      <button id="chat-send" type="submit" class="action-btn accent">ask</button>
+    </form>
+  </aside>
+</main>
+
+<div id="console" class="console hidden">
+  <div class="console-head">
+    <span class="console-title">kernel</span>
+    <span id="console-status" class="console-status"></span>
+    <button id="btn-console-close" class="ghost-btn">close</button>
+  </div>
+  <pre id="console-pre" class="code"></pre>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
