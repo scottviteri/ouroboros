@@ -1,0 +1,4 @@
+# Run logs and transient scratch — noise in history, and they carry absolute
+# paths from whichever machine happened to run them.
+kernel.log
+sandbox/note.txt
