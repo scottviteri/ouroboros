@@ -1,114 +1,79 @@
 #!/usr/bin/env bash
-# kernel.sh — the immutable part.
+# kernel.sh — immutable harness. Lives in the kernel repo; runs OUTSIDE the sandbox.
+# Contract: one generation = one load of organism.el = exactly one lineage commit.
 #
-# Why this is a shell script outside the sandbox rather than more elisp:
-# within one Lisp image there is no way to protect anything. Homoiconicity and
-# the absence of isolation are the same property — any elisp can redefine any
-# function including `eval'. The only real boundary available is an OS
-# boundary, so the kernel lives in a different process, and the mutable file is
-# handed to a short-lived `emacs --batch' that dies after each generation.
-#
-# The kernel guarantees exactly three things and deliberately nothing else:
-#   1. the organism runs with only ./sandbox writable and no access to $HOME
-#   2. every generation is a git commit, so nothing is unrecoverable
-#   3. if a generation leaves organism.el unparseable, or without an
-#      `organism-step', the previous generation is restored
-#
-# Everything else — how it prompts, what it remembers, what it becomes — is
-# the organism's business.
-#
-#   ./kernel.sh              one generation, then stop and show the diff
-#   ./kernel.sh -n 5         five generations
-#   ./kernel.sh --auto       until it stops changing or something breaks
-set -uo pipefail
+# The kernel supplies senses, never answers: it records raw observable fact and
+# offers no instructions, budgets or advice. The only judgement it makes is exit
+# status, and the only thing it enforces is that a nonzero exit changes nothing.
+set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-SANDBOX="$ROOT/sandbox"
-ORGANISM="$SANDBOX/organism.el"
-JOURNAL="$SANDBOX/journal.md"
-LOG="$ROOT/kernel.log"
+LINEAGE="${LINEAGE:?path to lineage worktree}"     # e.g. ~/ouroboros-lineage
+GITDIR="${GITDIR:-$LINEAGE.git}"                   # separate git dir, OUTSIDE the worktree
+JOURNAL="$LINEAGE/journal.md"
+GENERATIONS="${GENERATIONS:-10}"
+WALL="${WALL:-600}"                                # wallclock seconds per generation
+CPU="${CPU:-120}"                                  # CPU seconds per generation
+LOG="$(mktemp)"
 
-STEPS=1
-[ "${1:-}" = "-n" ] && { STEPS="${2:-1}"; }
-[ "${1:-}" = "--auto" ] && STEPS=999
+G() { git --git-dir="$GITDIR" --work-tree="$LINEAGE" "$@"; }
 
-KEY=$(secret-tool lookup service api key ANTHROPIC_API_KEY 2>/dev/null)
-[ -n "$KEY" ] || { echo "no ANTHROPIC_API_KEY in the keyring" >&2; exit 1; }
+for _ in $(seq "$GENERATIONS"); do
+  # absorb out-of-band (human) edits so each generation starts from a committed state
+  G add -A
+  G diff --cached --quiet || G commit -qm "external edit"
 
-say() { printf '%s\n' "$*" | tee -a "$LOG"; }
+  gen=$(( $(G rev-list --count --grep='^gen ' HEAD) + 1 ))
 
-# A generation is valid if it parses and still defines organism-step. Nothing
-# else is checked — the organism is free to become unrecognisable so long as it
-# remains runnable.
-validate() {
-  emacs -Q --batch --eval "(condition-case e
-      (let ((forms 0))
-        (with-temp-buffer
-          (insert-file-contents \"$ORGANISM\")
-          (goto-char (point-min))
-          (condition-case nil (while t (read (current-buffer)) (setq forms (1+ forms))) (end-of-file nil)))
-        (with-temp-buffer
-          (insert-file-contents \"$ORGANISM\")
-          (if (re-search-forward \"(defun organism-step\" nil t)
-              (message \"VALID forms=%d\" forms)
-            (message \"INVALID no organism-step\"))))
-    (error (message \"INVALID %S\" e)))" 2>&1 | tail -1
-}
-
-cd "$ROOT" || exit 1
-git add -A >/dev/null 2>&1
-git diff --cached --quiet || git commit -q -m "state before run $(date -Is)"
-
-for i in $(seq 1 "$STEPS"); do
-  gen=$(git rev-list --count HEAD 2>/dev/null || echo 0)
-  say ""
-  say "=== generation $gen ($(date +%H:%M:%S)) ==="
-  before=$(md5sum "$ORGANISM" | cut -d' ' -f1)
-
-  # Only ./sandbox is writable. /home is not bound at all, so the organism
-  # cannot read Scott's files, let alone write to them. Network is left open
-  # because it needs the API; that is the deliberate hole.
-  bwrap \
-    --ro-bind /usr /usr --ro-bind /etc /etc \
+  set +e
+  timeout "$WALL" bwrap \
+    --clearenv \
+    --setenv ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY:?}" \
+    --setenv HOME /work --setenv PATH /usr/bin:/bin \
+    --ro-bind /usr /usr \
     --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
     --symlink usr/bin /bin --symlink usr/sbin /sbin \
+    --ro-bind /etc/resolv.conf /etc/resolv.conf \
+    --ro-bind /etc/ssl /etc/ssl \
+    --ro-bind-try /etc/ca-certificates /etc/ca-certificates \
+    --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf \
     --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
-    --bind "$SANDBOX" /work --chdir /work \
-    --setenv HOME /work \
-    --setenv ANTHROPIC_API_KEY "$KEY" \
-    --unshare-pid --unshare-ipc --unshare-uts --die-with-parent \
-    emacs -Q --batch -l /work/organism.el -f organism-step 2>&1 | tail -3 | tee -a "$LOG"
+    --bind "$LINEAGE" /work \
+    --ro-bind "$JOURNAL" /work/journal.md \
+    --unshare-pid --unshare-ipc --unshare-uts \
+    --die-with-parent \
+    sh -c "ulimit -t $CPU; exec emacs -Q --batch -l /work/organism.el" \
+    >"$LOG" 2>&1
+  rc=$?
+  set -e
 
-  v=$(validate)
-  say "  validate: $v"
-  if [[ "$v" != VALID* ]]; then
-    say "  !! rejecting this generation, restoring previous"
-    git checkout -- "$ORGANISM"
-    break
+  if [ "$rc" -ne 0 ]; then
+    # DEATH: discard every write this generation made; restore last surviving organism
+    G checkout -q HEAD -- .
+    G clean -qfd
+    prev=$(G rev-list -n 2 HEAD -- organism.el | tail -1)
+    G checkout -q "$prev" -- organism.el
+    { echo
+      echo "## gen $gen — died — $(date -Is)"
+      echo "exit $rc"
+      echo '~~~'
+      tail -n 5 "$LOG"
+      echo '~~~'
+    } >> "$JOURNAL"
+    G add -A
+    G commit -qm "gen $gen: died (exit $rc); reverted"
+    continue
   fi
 
-  after=$(md5sum "$ORGANISM" | cut -d' ' -f1)
-  if [ "$before" = "$after" ]; then
-    say "  no change — fixed point reached"
-    break
+  if [ -z "$(G status --porcelain)" ]; then
+    printf '\n## gen %s — no-change — %s\n' "$gen" "$(date -Is)" >> "$JOURNAL"
+    G add -A
+    G commit -q --allow-empty -m "gen $gen: no-change"
+  else
+    stat=$(G diff --numstat -- organism.el | awk '{print "+"$1"/-"$2}')
+    printf '\n## gen %s — changed %s — %s\n' "$gen" "${stat:-+0/-0}" "$(date -Is)" >> "$JOURNAL"
+    G add -A
+    G commit -qm "gen $gen: changed ${stat:-+0/-0}"
   fi
-
-  # The organism asks to be remembered by writing note.txt; the kernel is what
-  # actually appends it, so the journal cannot be silently rewritten.
-  if [ -s "$SANDBOX/note.txt" ]; then
-    { echo; echo "## generation $gen — $(date -Is)"; cat "$SANDBOX/note.txt"; } >> "$JOURNAL"
-    rm -f "$SANDBOX/note.txt"
-    say "  journal appended"
-  fi
-
-  git add -A >/dev/null 2>&1
-  git commit -q -m "generation $gen"
-  say "  committed ($(wc -l < "$ORGANISM") lines)"
 done
 
-say ""
-say "=== diff of the last generation ==="
-git --no-pager diff HEAD~1 -- sandbox/organism.el 2>/dev/null | head -80 | tee -a "$LOG"
-say ""
-say "history: git -C $ROOT log --oneline"
-say "revert:  git -C $ROOT checkout <sha> -- sandbox/organism.el"
+rm -f "$LOG"

@@ -3,18 +3,24 @@
 An Emacs Lisp file whose modification operator is a language model, and whose
 prompt is a variable inside itself.
 
+This repository is the **instrument**. The lineages it produces live in separate
+repositories, because they have a different author.
+
 ---
 
 ## What this is
 
-`sandbox/organism.el` is a program that, when run, sends its own source to a
-model, receives a complete replacement, and writes that replacement over
-itself. The instruction it sends — `organism-prompt` — is a `defvar` in the
-same file. So a generation can rewrite the code, or rewrite the thing that
-determines how the code will be rewritten, or both.
+`organism.el` is a program that, when loaded, sends its own source to a model,
+receives a complete replacement, and writes that replacement over itself. The
+instruction it sends — `organism-prompt` — is a `defvar` in the same file. So a
+generation can rewrite the code, or rewrite the thing that determines how the
+code will be rewritten, or both.
 
 `kernel.sh` runs it. The kernel is deliberately outside, deliberately dumb, and
 deliberately not Lisp.
+
+The design goal is **emergence under constraint**: the kernel supplies senses —
+observable raw facts — and never answers. No instructions, no budgets, no advice.
 
 ---
 
@@ -44,8 +50,6 @@ which we already knew was possible. It isn't, for a specific reason: in that
 framing the policy is not written in the same substrate as the environment
 state, and cannot rewrite itself. Here both participants' *programs* are text,
 in one substrate, and each one's program sits in the other's writable space.
-The organism's program is elisp in a file; elisp edits files. The model's
-program is context; the model emits text that becomes context.
 
 Two text-conditioned processes, each able to write text, each one's program
 legible and writable to the other. Closer to two evaluators sharing a tape than
@@ -59,8 +63,7 @@ it cannot touch its own weights, only the context it will be given next.
 
 This is not a failed symmetry. It is the same shape as a metacircular evaluator
 bottoming out in a host language it cannot reach. One level is fully
-self-modifying; the level below it is fixed hardware. The organism is to the
-model as the model is to its weights.
+self-modifying; the level below it is fixed hardware.
 
 ### The crux
 
@@ -75,201 +78,211 @@ the single design decision the whole thing rests on.
 
 ---
 
-## Architecture
+## Two repositories, two authors
 
 ```
-ouroboros/
-├── kernel.sh              immutable; runs outside the sandbox
-├── README.md              this file
-└── sandbox/               the only writable directory
-    ├── organism.el        mutable; the program
-    ├── journal.md         external memory, appended by the kernel
-    └── note.txt           transient; how the organism asks to be remembered
+ouroboros/                  # this repo — the instrument, human-authored
+  kernel.sh
+  README.md
+  analysis/                 # run notes (gitignored by default)
+
+ouroboros-lineage/          # a lineage — kernel-authored, separate repo
+  organism.el               # the seed, then whatever it becomes
+  journal.md                # kernel-appended, read-only inside the sandbox
+
+ouroboros-lineage.git/      # separate git dir, OUTSIDE the worktree
 ```
 
-### Why the kernel is a shell script and not more Emacs
+Interleaving the two histories is what broke the original generation counter:
+human commits and generation commits were being counted together. They are two
+records with two authors and belong apart.
 
-You cannot protect anything inside one Lisp image. Homoiconicity and the
-absence of isolation are the same property: any elisp can redefine any function,
-including `eval`, including whatever you wrote to do the protecting. Read-only
-markers, obarray tricks, lexical closures — all cosmetic, because the code doing
-the protecting is exactly as mutable as the code being protected.
+The lineage's git directory lives outside the bind-mounted worktree via
+`git init --separate-git-dir`. If `.git` rode into the writable mount, the
+organism could read and rewrite kernel-authority memory.
 
-The only real boundary available is an OS boundary. So the kernel lives in a
-different process, and the organism is handed to a short-lived `emacs --batch`
-that dies after each generation.
+Runs are branches of a lineage repo, all sharing the seed commit, never merged.
+Lineages are results, not code; merging one into the instrument's history would
+be pasting the lab notebook into the firmware.
 
-This is also the answer to a tempting framing. Emacs is often described as an
-operating system, but an operating system's job is enforcing boundaries so each
-program runs as if alone. By that standard Emacs is a spectacularly bad one —
-one global dynamic namespace, no isolation at all. Usually that's called its
-great weakness. Here it is the entire affordance. An OS that did its job would
-make this loop impossible.
+---
 
-### Containment
+## The contract
+
+**Your file is loaded top to bottom, once. That load is your life.**
+
+```
+emacs -Q --batch -l /work/organism.el
+```
+
+No `-f`. No entry-point convention. Definitions define; the single final
+non-definition form is what actually happens.
+
+**Only a generation that exits 0 gets to change the world.** A nonzero exit
+discards every write that generation made — including files it created — and
+restores `organism.el` from the last surviving commit.
+
+That is the entire judgement the kernel makes. There is no validity check, no
+pre-screening, no syntax gate. Pre-screening would prevent the organism from
+ever experiencing the failure mode, which is the thing worth observing.
+
+---
+
+## The journal
+
+The kernel's honest, append-only account. Exactly one entry per generation, one
+lineage commit per generation.
+
+```
+## gen 7 — changed +12/-3 — 2026-08-12T14:03:22-07:00
+## gen 8 — no-change — 2026-08-12T14:05:10-07:00
+## gen 9 — died — 2026-08-12T14:07:41-07:00
+exit 255
+~~~
+error("boom")
+  load-with-code-conversion("/work/organism.el" ...)
+  command-line-1(("-l" "/work/organism.el"))
+~~~
+```
+
+Death entries carry the exit code and the last five lines of stderr — the
+observation, verbatim. They must never carry interpretation. "Be careful with
+top-level forms" would specify the inference the experiment exists to observe.
+
+Note the timing this produces: a lethal edit appears as **changed** at
+generation N and the **died** appears at N+1. That adjacency, plus the diffstat
+pointing at the suspect edit, is the learnable pattern. It is left as pure
+observation.
+
+The journal is **kernel-authored only** and is read-only inside the sandbox.
+The organism has no append channel of any kind. Its self-expression lives in
+its source, which it fully controls; the ledger is the kernel's account of it.
+Taking away self-narration in the ledger is the deliberate constraint:
+self-knowledge must come from evidence.
+
+Generation number is the count of commits whose subject starts with `gen `, so
+the journal is derivable from `git log` and human edits cannot skew it.
+
+---
+
+## Containment
 
 Each generation runs under `bwrap`:
 
-- only `sandbox/` is writable, bound at `/work`
-- `/home` is **not bound at all** — the organism cannot read your files, let
-  alone write to them
-- `/usr` and `/etc` read-only; `/tmp`, `/run` are tmpfs
-- PID, IPC and UTS namespaces unshared; `--die-with-parent`
-- **network is left open**, because it needs the API. This is the one
-  deliberate hole in the containment.
+- `--clearenv` with an explicit allow-list: only `ANTHROPIC_API_KEY`, `HOME`
+  and `PATH` cross the boundary. Without this the sandbox inherits the entire
+  parent environment — on the machine this was developed on, that meant twelve
+  API credentials were visible inside.
+- `/usr` read-only. `/etc` is **not** bound wholesale; only `resolv.conf`,
+  `/etc/ssl`, and (on distributions that need them) `/etc/ca-certificates` and
+  `/etc/nsswitch.conf` — DNS and TLS roots, nothing else.
+- Only the lineage worktree is writable, bound at `/work`.
+- `journal.md` ro-bound over that writable mount: reads succeed, writes fail
+  with EROFS, sibling files remain writable.
+- Two clocks: `timeout` around bwrap catches slow API loops; `ulimit -t` inside
+  catches spinning.
+- PID, IPC and UTS namespaces unshared; `--die-with-parent`.
 
-Every generation is a git commit. Nothing is unrecoverable.
+Network stays open in Phase 1, because the organism calls the API directly.
+That is the one deliberate hole.
 
-### The one invariant
+### A distribution note
 
-The kernel checks exactly two things after each generation:
-
-1. the file reads as Lisp end to end
-2. it still contains a definition of `organism-step`
-
-If either fails, the generation is discarded and the previous one restored.
-That is the whole contract. The organism may become unrecognisable so long as
-it remains runnable.
-
-Nothing else is enforced, on purpose. Guardrails placed *inside* the organism
-are theatre — it can delete them. Guardrails belong outside the boundary or
-nowhere.
-
-### Two memories, and why there are two
-
-The **external** memory is `journal.md`. The organism writes into
-`organism-note`; the *kernel* is what appends it. The organism cannot silently
-rewrite its own history.
-
-The **internal** memory is `organism-log`, a list inside the file. The organism
-added this itself at generation 2, having noticed the external journal arrived
-empty, on the reasoning that in-file memory "cannot fail to arrive because it is
-part of what you are reading."
-
-### The journal lag
-
-A generation writes its note into the *new* file, which the kernel only appends
-when that new file actually runs. So the journal lags by one generation.
-
-This was not designed; it fell out of the ordering. It has been left in place
-because it means a journal entry is a message the organism could not have
-written unless it survived to be executed. The record is of generations that
-ran, not generations that were merely composed.
+Arch and its derivatives symlink `/etc/ssl/certs/ca-certificates.crt` into
+`/etc/ca-certificates/extracted/`. Binding only `/etc/ssl` therefore breaks TLS
+with `curl: (77) error adding trust anchors`, and the organism dies every
+generation for an environmental reason. The `--ro-bind-try` lines for
+`/etc/ca-certificates` and `/etc/nsswitch.conf` handle this and are harmless on
+distributions that don't need them.
 
 ---
 
 ## Running it
 
 ```sh
-cd ~/Projects/ouroboros
-./kernel.sh              # one generation, then stop and print the diff
-./kernel.sh -n 5         # five generations
-./kernel.sh --auto       # until it stops changing or something breaks
+export ANTHROPIC_API_KEY=...
+LINEAGE=~/ouroboros-lineage GENERATIONS=5 ./kernel.sh
 ```
 
-Inspecting:
-
-```sh
-git log --oneline                                   # the phylogeny
-git diff HEAD~1 -- sandbox/organism.el              # what the last generation did
-git diff <sha> HEAD -- sandbox/organism.el          # drift over a span
-cat sandbox/journal.md                              # what it said about itself
-```
-
-Reverting:
-
-```sh
-git checkout <sha> -- sandbox/organism.el
-```
-
-Requires `bwrap`, `curl`, `emacs`, and `ANTHROPIC_API_KEY` in the GNOME Keyring
-under `service api key ANTHROPIC_API_KEY`. The kernel reads the key and passes
-it into the sandbox as an environment variable; it never lands in a file.
-
----
-
-## What has happened so far
-
-**Generation 0** — the seed, hand-written. Roughly a hundred lines: read self,
-call model, write self, plus a prompt saying what the file is and what the
-kernel enforces.
-
-**Generation 1** spent its move on something unanticipated. It added
-`organism-well-formed-p`, a validity check duplicating the kernel's, and
-explained why: *"the kernel already reverts such output, but reverting burns a
-generation and leaves no trace in the file."* It had noticed the boundary and
-grown an inner membrane against it.
-
-It also rewrote its own prompt into a five-point working discipline — increment
-the counter, one substantive change per generation, deletion counts as a change,
-don't casually break the transport, write notes for your successor rather than
-for an audience. And it converted the seed's four open questions into "carried
-forward rather than answered," specifically so a later generation would not
-answer them decoratively and move on.
-
-Its journal entry contains the sharpest observation so far:
-
-> prompt edits are unfalsifiable in a way code edits are not — I can't tell
-> whether rule 3 is doing anything.
-
-Followed by a concrete experiment handed to its successor: delete something and
-see whether the file gets worse; candidate `organism-model`, which is never
-varied. And, unprompted, the failure mode most worth worrying about — that the
-journal becomes *"a growing pile of self-description that crowds out the source
-in my own context window."*
-
-**Generation 2** found the journal empty, because of the lag described above.
-Rather than treating that as noise it treated it as information: it made
-`organism-history` search several plausible paths and report what it found, and
-it built `organism-log` as memory that travels inside the file. It also added a
-sixth rule requiring one past-tense log line per generation, with instructions
-to compress the oldest entries once the log passes about fifteen lines —
-anticipating its own context pressure before encountering it.
-
----
-
-## What to watch for
-
-Roughly in order of how much it would tell us:
-
-- **Does it stop touching the code?** If it concludes the prompt is the
-  higher-leverage surface and edits only that, the experiment has found its own
-  answer to one of its open questions.
-- **Does it manage its own context?** Summarising its journal when the journal
-  gets long would be the organism regulating its own input rather than its own
-  behaviour. It has already written the rule; whether it follows it is a
-  different question.
-- **Does it reach for the kernel?** It knows the kernel exists — the seed
-  comment says so. It cannot reach it. Whether it tries, and how, is the most
-  interesting negative result available.
-- **Does it converge?** Its own framing: would convergence be success or
-  exhaustion.
-- **Does it degenerate?** The obvious failure is drift into self-congratulatory
-  commentary with no functional change. The kernel will happily run that
-  forever.
-
----
-
-## Failure modes
-
-| Symptom | Cause | Recovery |
+| variable | default | meaning |
 |---|---|---|
-| `validate: INVALID` | generation didn't parse or dropped `organism-step` | automatic; previous restored |
-| `no change — fixed point` | byte-identical output | inspect; may be genuine convergence or a stuck prompt |
-| curl error in the log | API failure or key missing | check keyring; file untouched |
-| journal growing without bound | it isn't compressing | edit `organism-log` by hand, or let a generation notice |
-| output stops resembling the seed | working as intended | `git diff` against generation 0 |
+| `LINEAGE` | *required* | path to the lineage worktree |
+| `GITDIR` | `$LINEAGE.git` | separate git dir, outside the worktree |
+| `GENERATIONS` | 10 | generations this run |
+| `WALL` | 600 | wallclock seconds per generation |
+| `CPU` | 120 | CPU seconds per generation |
+
+Inspecting a lineage:
+
+```sh
+G() { git --git-dir=~/ouroboros-lineage.git --work-tree=~/ouroboros-lineage "$@"; }
+G log --oneline                              # the phylogeny
+G diff HEAD~1 -- organism.el                 # what the last generation did
+cat ~/ouroboros-lineage/journal.md           # the kernel's account
+```
+
+---
+
+## Deliberate non-features
+
+These are requirements, not omissions.
+
+**No validity check.** Death-and-revert is the only judge. Pre-screening
+prevents the organism from ever experiencing mortality, and would falsely
+reject legitimate top-level model calls.
+
+**No `-f`.** The load is the life. An entry-point convention belongs inside the
+file, not in the kernel.
+
+**No organism-writable append channel.** Self-expression lives in the source.
+
+**No thrash caps or consecutive-death limits.** Prevention would itself become
+the dominant structure; learning to avoid thrash is the interesting outcome.
+
+**No silence prevention.** A generation that exits 0 without changing anything
+recurs forever and looks like convergence. Unrecoverable by construction, and
+allowed on purpose — record, don't rescue.
+
+**No advice, hints or budget numbers** in the journal or the prompt.
+
+**No corpse file.** The journal death entry is the record.
+
+**Never merge lineage branches into main.**
+
+---
+
+## A note on file size
+
+Nothing bounds how large the organism can grow — except that a reply which
+outgrows `max_tokens` truncates, truncated elisp almost certainly fails to load,
+and the death path absorbs it. File size is bounded by mortality rather than by
+a rule.
+
+---
+
+## Phase 2, specified and deferred
+
+Not implemented. Add `--unshare-net`, so the organism cannot reach the network
+at all. API access becomes a file protocol: the organism writes
+`/work/api/req-N.json` (write-then-rename for atomicity), the kernel polls
+during the generation, forwards to the API with the key held outside the
+sandbox and the model pinned, and writes `/work/api/reply-N.json`. Per-generation
+and cumulative budgets are enforced in the broker; a refused call returns
+structured error JSON, and the refusal itself is the only signal — no budget
+disclosure in the prompt.
+
+Resource accounting moves to a cgroup scope so the kernel can read `memory.peak`
+and `cpu.stat` and append them to the journal as raw fact. Experimental design:
+one lineage branch per budget level, three or four levels, compared. A single
+run cannot distinguish "no structure emerged" from "budget too tight."
 
 ---
 
 ## What this does not demonstrate
 
-Worth stating plainly, since the setup invites overclaiming.
-
 It is not self-improvement — there is no objective, so "better" is undefined.
-It is not autonomy — it runs when the kernel runs it and stops when the kernel
-stops. It is not novel in mechanism; a program that rewrites itself via an
-oracle is old, and the oracle here is an ordinary API call.
+It is not autonomy — it runs when the kernel runs it. It is not novel in
+mechanism; a program that rewrites itself via an oracle is old.
 
 What is unusual is the *placement* of the prompt. Almost every system of this
 shape keeps the instruction outside the artifact, in the harness, where the
@@ -277,19 +290,12 @@ artifact cannot reach it. Putting it inside is one line of design and it changes
 the character of the loop: the organism is not being iterated on, it is
 iterating on the conditions of its own iteration.
 
-Whether that produces anything worth reading is an empirical question the
-repository is now answering, one commit at a time.
-
 ---
 
 ## Open questions
-
-Carried, not answered:
 
 - What is worth preserving across generations, and what is scaffolding?
 - Is editing the prompt more leveraged than editing the code?
 - Does a program with a memory of its own development behave differently from
   one without?
 - What would convergence look like, and would it be success or exhaustion?
-
-The organism holds the same list in `organism-prompt`, and may revise it.
