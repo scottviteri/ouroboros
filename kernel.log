@@ -10,3 +10,7 @@
 
 history: git -C /home/scottviteri/Projects/ouroboros log --oneline
 revert:  git -C /home/scottviteri/Projects/ouroboros checkout <sha> -- sandbox/organism.el
+
+=== generation 2 (19:30:03) ===
+ORGANISM-STEP-OK generation=0 wrote=8512 bytes
+  validate: VALID forms=11
