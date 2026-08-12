@@ -79,10 +79,16 @@ success or failure?"
         (if (/= rc 0)
             (error "curl failed: %s" (buffer-string))
           (let* ((parsed (json-parse-string (buffer-string) :object-type 'alist))
-                 (content (alist-get 'content parsed)))
-            (if (and content (> (length content) 0))
-                (alist-get 'text (aref content 0))
-              (error "unexpected reply: %s" (buffer-string)))))))))
+                 (content (alist-get 'content parsed))
+                 (text nil))
+            (unless content (error "no content in reply: %s" (buffer-string)))
+            ;; The first block is not necessarily the answer — a thinking block
+            ;; can precede it — so take the first block whose type is "text".
+            (dotimes (i (length content))
+              (let ((blk (aref content i)))
+                (when (and (null text) (equal (alist-get 'type blk) "text"))
+                  (setq text (alist-get 'text blk)))))
+            (or text (error "no text block in reply: %s" (buffer-string)))))))))
 
 (defun organism-step ()
   "Rewrite this file once."

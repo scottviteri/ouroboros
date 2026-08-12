@@ -1,0 +1,12 @@
+
+=== generation 1 (19:25:53) ===
+  command-line-1(("-l" "/work/organism.el" "-f" "organism-step"))
+  command-line()
+  normal-top-level()
+  validate: VALID forms=9
+  no change — fixed point reached
+
+=== diff of the last generation ===
+
+history: git -C /home/scottviteri/Projects/ouroboros log --oneline
+revert:  git -C /home/scottviteri/Projects/ouroboros checkout <sha> -- sandbox/organism.el
