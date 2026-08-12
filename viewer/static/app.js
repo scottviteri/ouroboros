@@ -159,10 +159,15 @@ async function select(idx) {
 
 function nodeName(node) {
   if (node.sha === "WORKTREE") return "working tree";
-  if (node.generation !== null && node.organism_changed) {
-    return `generation ${node.generation}`;
-  }
+  if (/^generation \d+$/.test(node.subject)) return node.subject;
   return node.subject.length > 34 ? node.subject.slice(0, 33) + "…" : node.subject;
+}
+
+function nodeShortLabel(node) {
+  if (node.sha === "WORKTREE") return "now";
+  const m = node.subject.match(/^generation (\d+)$/);
+  if (m) return `gen ${m[1]}`;
+  return node.short;
 }
 
 function buildTimeline() {
@@ -175,10 +180,7 @@ function buildTimeline() {
       (node.sha === "WORKTREE" ? " worktree" : "");
     btn.title = `${node.short} — ${node.subject}`;
     btn.innerHTML = `<span class="tl-dot"></span><span class="tl-label"></span>`;
-    btn.querySelector(".tl-label").textContent =
-      node.sha === "WORKTREE" ? "now" :
-      (node.generation !== null && node.organism_changed)
-        ? `gen ${node.generation}` : node.short;
+    btn.querySelector(".tl-label").textContent = nodeShortLabel(node);
     btn.addEventListener("click", () => select(i));
     tl.appendChild(btn);
   });
