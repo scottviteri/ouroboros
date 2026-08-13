@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ouroboros lineage viewer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1e2725;
+      --muted: #65706c;
+      --paper: #f5f2ea;
+      --panel: #fffdf8;
+      --line: #d8d5ca;
+      --changed: #147d64;
+      --changed-soft: #dff1e9;
+      --died: #bd3d32;
+      --died-soft: #f9e5e1;
+      --quiet: #7a8580;
+      --quiet-soft: #e9ece9;
+      --external: #a66612;
+      --external-soft: #f8ebcf;
+      --context: #65559b;
+      --context-soft: #ece7f7;
+      --shadow: 0 16px 40px rgba(41, 50, 46, 0.08);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 5% 0%, rgba(20, 125, 100, 0.09), transparent 28rem),
+        var(--paper);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+
+    button, select { font: inherit; }
+    button { color: inherit; }
+
+    .shell {
+      width: min(1500px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 34px 0 64px;
+    }
+
+    .masthead {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 32px;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      color: var(--changed);
+      font: 700 0.72rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 4rem);
+      letter-spacing: -0.055em;
+      line-height: 0.98;
+      margin: 0;
+      font-weight: 750;
+    }
+
+    .path {
+      color: var(--muted);
+      font: 0.82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      margin: 12px 0 0;
+      overflow-wrap: anywhere;
+    }
+
+    .metrics { display: flex; gap: 10px; flex: 0 0 auto; }
+
+    .metric {
+      min-width: 92px;
+      padding: 13px 16px;
+      background: rgba(255, 253, 248, 0.75);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      text-align: right;
+    }
+
+    .metric strong { display: block; font-size: 1.35rem; line-height: 1; }
+    .metric span { color: var(--muted); font-size: 0.72rem; }
+
+    .compare-bar {
+      background: #26312e;
+      color: #f7f5ef;
+      border-radius: 16px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: var(--shadow);
+      margin-bottom: 18px;
+    }
+
+    .compare-title {
+      font-size: 0.78rem;
+      font-weight: 750;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-right: auto;
+    }
+
+    .select-wrap { display: flex; align-items: center; gap: 7px; }
+    .select-wrap label { color: #b8c1bd; font-size: 0.72rem; }
+
+    select {
+      border: 1px solid #55615d;
+      border-radius: 9px;
+      background: #35413d;
+      color: white;
+      padding: 7px 30px 7px 10px;
+    }
+
+    .primary-button {
+      border: 0;
+      border-radius: 9px;
+      background: #bde9d7;
+      color: #123e32;
+      font-weight: 750;
+      padding: 8px 13px;
+      cursor: pointer;
+    }
+
+    .primary-button:hover { background: #d0f3e5; }
+
+    .comparison {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      margin-bottom: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .comparison[hidden] { display: none; }
+
+    .comparison-head, .section-head, .detail-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .text-button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 4px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .sidebar, .detail {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 18px;
+      max-height: calc(100vh - 36px);
+      overflow: auto;
+      padding: 18px;
+    }
+
+    .sidebar h2, .detail h2, .comparison h2 {
+      margin: 0;
+      font-size: 1rem;
+      letter-spacing: -0.02em;
+    }
+
+    .sidebar-note { color: var(--muted); font-size: 0.75rem; margin: 4px 0 16px; }
+
+    .timeline {
+      display: grid;
+      gap: 8px;
+      position: relative;
+    }
+
+    .timeline::before {
+      content: "";
+      position: absolute;
+      width: 1px;
+      background: var(--line);
+      top: 14px;
+      bottom: 14px;
+      left: 8px;
+    }
+
+    .timeline-event {
+      width: 100%;
+      border: 1px solid transparent;
+      background: transparent;
+      border-radius: 11px;
+      padding: 9px 10px 9px 29px;
+      text-align: left;
+      position: relative;
+      min-width: 0;
+    }
+
+    button.timeline-event { cursor: pointer; }
+    button.timeline-event:hover { background: #f2f0e9; }
+    button.timeline-event.active { background: #eef5f1; border-color: #b9d8cb; }
+
+    .timeline-dot {
+      position: absolute;
+      z-index: 1;
+      left: 3px;
+      top: 15px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--quiet);
+      box-shadow: 0 0 0 3px var(--panel);
+    }
+
+    .timeline-event.changed .timeline-dot { background: var(--changed); }
+    .timeline-event.died .timeline-dot { background: var(--died); }
+    .timeline-event.external .timeline-dot { background: var(--external); }
+    .timeline-event.context .timeline-dot,
+    .timeline-event.seed .timeline-dot { background: var(--context); }
+
+    .event-meta {
+      color: var(--muted);
+      font: 700 0.68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.045em;
+      text-transform: uppercase;
+    }
+
+    .event-subject {
+      display: block;
+      font-size: 0.78rem;
+      line-height: 1.35;
+      margin-top: 2px;
+      overflow-wrap: anywhere;
+    }
+
+    .non-generation { opacity: 0.78; }
+
+    .artifact-index {
+      border-top: 1px solid var(--line);
+      margin-top: 18px;
+      padding-top: 16px;
+    }
+
+    .artifact-index h3 {
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin: 0 0 9px;
+    }
+
+    .artifact-link {
+      display: block;
+      width: 100%;
+      border: 0;
+      background: #f2f0e9;
+      border-radius: 8px;
+      padding: 8px 9px;
+      text-align: left;
+      font: 0.72rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+      margin-top: 6px;
+      cursor: pointer;
+    }
+
+    .artifact-link:hover { background: var(--external-soft); }
+
+    .detail { padding: 24px; min-height: 520px; }
+    .detail-head { align-items: flex-start; margin-bottom: 20px; }
+
+    .detail-title {
+      margin: 0;
+      font-size: clamp(1.5rem, 3vw, 2.25rem);
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+    }
+
+    .subject {
+      color: var(--muted);
+      font: 0.78rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      margin: 7px 0 0;
+    }
+
+    .badge, .file-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 750;
+      padding: 5px 9px;
+      white-space: nowrap;
+    }
+
+    .badge.changed { color: var(--changed); background: var(--changed-soft); }
+    .badge.died { color: var(--died); background: var(--died-soft); }
+    .badge.no-change { color: #56615c; background: var(--quiet-soft); }
+
+    .warning, .death-alert {
+      border-radius: 13px;
+      padding: 15px 16px;
+      margin: 0 0 18px;
+    }
+
+    .warning { background: var(--external-soft); color: #6f4307; }
+    .death-alert { background: var(--died-soft); border: 1px solid #e7b4ad; }
+    .death-alert h3 { color: var(--died); margin: 0 0 5px; }
+    .death-alert p { color: #70413c; margin: 0 0 12px; font-size: 0.84rem; }
+
+    .touched {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 20px;
+    }
+
+    .touched-label { color: var(--muted); font-size: 0.72rem; margin-right: 3px; }
+    .file-chip { background: #efede6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 550; }
+    .file-chip strong { color: var(--changed); }
+
+    .section {
+      border-top: 1px solid var(--line);
+      padding-top: 20px;
+      margin-top: 20px;
+    }
+
+    .section-head { margin-bottom: 10px; }
+    .section h3 { margin: 0; font-size: 0.95rem; }
+    .section-note { color: var(--muted); font-size: 0.72rem; }
+
+    pre {
+      margin: 0;
+      border: 1px solid #d9d6cc;
+      border-radius: 11px;
+      background: #f7f5ef;
+      padding: 14px;
+      overflow: auto;
+      color: #26302d;
+      font: 0.76rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre;
+      tab-size: 2;
+    }
+
+    pre.stderr { background: #2f2322; border-color: #2f2322; color: #ffe8e4; }
+    .diff-line { display: block; min-height: 1.55em; }
+    .diff-line.add { color: #076a51; background: rgba(20, 125, 100, 0.075); }
+    .diff-line.del { color: #a52f27; background: rgba(189, 61, 50, 0.075); }
+    .diff-line.hunk { color: #69549b; }
+    .diff-line.meta { color: #7a8580; }
+    .empty { color: var(--muted); font-style: italic; white-space: normal; }
+
+    .file-list { display: grid; gap: 13px; }
+
+    .file-card {
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      overflow: hidden;
+    }
+
+    .file-card-head {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 11px 13px;
+      background: #f2f0e9;
+      font: 0.76rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .file-status { color: var(--changed); font-weight: 800; }
+    .artifact-badge { color: #7d4e0c; background: var(--external-soft); margin-left: auto; }
+    .file-card pre { border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+
+    details { border-top: 1px solid var(--line); }
+    summary { cursor: pointer; padding: 10px 13px; color: var(--muted); font-size: 0.75rem; }
+    details pre { border-top: 1px solid var(--line); }
+
+    .loading, .error {
+      display: grid;
+      place-items: center;
+      min-height: 400px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .error { color: var(--died); }
+
+    @media (max-width: 850px) {
+      .shell { width: min(100% - 24px, 700px); padding-top: 22px; }
+      .masthead { align-items: flex-start; flex-direction: column; }
+      .metrics { align-self: stretch; }
+      .metric { flex: 1; text-align: left; }
+      .compare-bar { align-items: stretch; flex-direction: column; }
+      .compare-title { margin: 0 0 3px; }
+      .select-wrap { justify-content: space-between; }
+      .select-wrap select { flex: 1; }
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: static; max-height: none; }
+      .detail { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <div>
+        <div class="eyebrow">read-only git inspection</div>
+        <h1>ouroboros lineage</h1>
+        <p class="path" id="lineage-path">Loading lineage…</p>
+      </div>
+      <div class="metrics" aria-label="Lineage counts">
+        <div class="metric"><strong id="generation-count">—</strong><span>generations</span></div>
+        <div class="metric"><strong id="commit-count">—</strong><span>commits</span></div>
+      </div>
+    </header>
+
+    <section class="compare-bar" aria-label="Compare generations">
+      <div class="compare-title">Pairwise diff</div>
+      <div class="select-wrap">
+        <label for="compare-from">from</label>
+        <select id="compare-from"></select>
+      </div>
+      <div class="select-wrap">
+        <label for="compare-to">to</label>
+        <select id="compare-to"></select>
+      </div>
+      <button class="primary-button" id="compare-button" type="button">Compare</button>
+    </section>
+
+    <section class="comparison" id="comparison" hidden>
+      <div class="comparison-head">
+        <h2 id="comparison-title">Generation diff</h2>
+        <button class="text-button" id="comparison-close" type="button">Close</button>
+      </div>
+      <div class="touched" id="comparison-files"></div>
+      <div id="comparison-diff"></div>
+    </section>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <h2>Recorded history</h2>
+        <p class="sidebar-note">Generations are counted; other commits stay unnumbered.</p>
+        <div class="timeline" id="timeline"></div>
+        <section class="artifact-index" id="artifact-index" hidden>
+          <h3>Organism artifacts</h3>
+          <div id="artifact-links"></div>
+        </section>
+      </aside>
+      <article class="detail" id="detail">
+        <div class="loading">Reading the lineage…</div>
+      </article>
+    </main>
+  </div>
+
+  <script>
+    "use strict";
+
+    const state = { summary: null, selectedSha: null };
+    const $ = (id) => document.getElementById(id);
+
+    function element(tag, className = "", text = "") {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== "") node.textContent = text;
+      return node;
+    }
+
+    async function requestJson(path) {
+      const response = await fetch(path, { headers: { Accept: "application/json" } });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.error || `Request failed (${response.status})`);
+      return value;
+    }
+
+    function dateLabel(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return new Intl.DateTimeFormat(undefined, {
+        month: "short", day: "numeric", hour: "numeric", minute: "2-digit"
+      }).format(date);
+    }
+
+    function kindLabel(commit) {
+      if (commit.generation !== null) return `gen ${commit.generation}`;
+      if (commit.kind === "external") return "external edit";
+      if (commit.kind === "seed") return "seed";
+      return "recorded context";
+    }
+
+    function statusLabel(kind) {
+      if (kind === "no-change") return "no change";
+      if (kind === "died") return "died";
+      if (kind === "changed") return "changed";
+      return kind;
+    }
+
+    function diffBlock(text, emptyMessage = "No diff for this selection.") {
+      const pre = element("pre", "diff");
+      if (!text) {
+        pre.classList.add("empty");
+        pre.textContent = emptyMessage;
+        return pre;
+      }
+      for (const line of text.split("\n")) {
+        let kind = "";
+        if (line.startsWith("@@")) kind = "hunk";
+        else if (
+          line.startsWith("diff --git") || line.startsWith("index ") ||
+          line.startsWith("---") || line.startsWith("+++")
+        ) kind = "meta";
+        else if (line.startsWith("+")) kind = "add";
+        else if (line.startsWith("-")) kind = "del";
+        const span = element("span", `diff-line ${kind}`, `${line}\n`);
+        pre.append(span);
+      }
+      return pre;
+    }
+
+    function fileChips(files, label = "Touched") {
+      const row = element("div", "touched");
+      row.append(element("span", "touched-label", label));
+      for (const file of files) {
+        const chip = element("span", "file-chip");
+        chip.append(element("strong", "", file.status || ""));
+        chip.append(document.createTextNode(file.path));
+        row.append(chip);
+      }
+      return row;
+    }
+
+    function renderTimeline(summary) {
+      const timeline = $("timeline");
+      timeline.replaceChildren();
+      for (const commit of [...summary.commits].reverse()) {
+        const selectable = commit.generation !== null;
+        const item = element(selectable ? "button" : "div",
+          `timeline-event ${commit.kind}${selectable ? "" : " non-generation"}`);
+        if (selectable) {
+          item.type = "button";
+          item.dataset.sha = commit.sha;
+          item.addEventListener("click", () => selectGeneration(commit.sha));
+        }
+        item.title = `${commit.short_sha} · ${dateLabel(commit.date)}`;
+        item.append(element("span", "timeline-dot"));
+        item.append(element("span", "event-meta", `${kindLabel(commit)} · ${commit.short_sha}`));
+        item.append(element("span", "event-subject", commit.subject));
+        timeline.append(item);
+      }
+    }
+
+    function renderArtifactIndex(summary) {
+      if (!summary.artifacts.length) return;
+      $("artifact-index").hidden = false;
+      const links = $("artifact-links");
+      links.replaceChildren();
+      for (const artifact of summary.artifacts) {
+        const label = artifact.kind === "state"
+          ? `state.el evolved · gen ${artifact.generation}`
+          : `${artifact.path} · gen ${artifact.generation}`;
+        const button = element("button", "artifact-link", label);
+        button.type = "button";
+        button.addEventListener("click", () => selectGeneration(artifact.sha));
+        links.append(button);
+      }
+    }
+
+    function populateComparison(summary) {
+      for (const select of [$("compare-from"), $("compare-to")]) {
+        select.replaceChildren();
+        for (const generation of summary.generations) {
+          const option = element(
+            "option", "", `gen ${generation.generation} · ${statusLabel(generation.kind)}`
+          );
+          option.value = generation.sha;
+          select.append(option);
+        }
+      }
+      if (summary.generations.length) {
+        $("compare-from").value = summary.generations[0].sha;
+        $("compare-to").value = summary.generations.at(-1).sha;
+      }
+    }
+
+    function artifactLabel(kind) {
+      if (kind === "state") return "state evolution";
+      if (kind === "rejected") return "rejected successor";
+      if (kind === "successor") return "successor";
+      return "";
+    }
+
+    function fileCard(file, generation) {
+      const card = element("section", "file-card");
+      const head = element("div", "file-card-head");
+      head.append(element("span", "file-status", file.status));
+      head.append(element("span", "", file.path));
+      if (file.artifact_kind) {
+        head.append(element("span", "badge artifact-badge", artifactLabel(file.artifact_kind)));
+      }
+      card.append(head);
+      card.append(diffBlock(file.diff, "The file is listed as touched, but has no textual diff."));
+      if (file.snapshot !== null) {
+        const details = element("details");
+        if (file.artifact_kind === "state" || file.artifact_kind === "rejected") {
+          details.open = true;
+        }
+        details.append(element("summary", "", `Snapshot at generation ${generation}`));
+        details.append(element("pre", "", file.snapshot));
+        card.append(details);
+      }
+      return card;
+    }
+
+    function section(title, note = "") {
+      const wrapper = element("section", "section");
+      const head = element("div", "section-head");
+      head.append(element("h3", "", title));
+      if (note) head.append(element("span", "section-note", note));
+      wrapper.append(head);
+      return wrapper;
+    }
+
+    function renderDetails(details) {
+      const commit = details.commit;
+      const root = $("detail");
+      root.replaceChildren();
+
+      const head = element("header", "detail-head");
+      const copy = element("div");
+      copy.append(element("h2", "detail-title", `Generation ${commit.generation}`));
+      copy.append(element("p", "subject", `${commit.subject} · ${commit.short_sha} · ${dateLabel(commit.date)}`));
+      head.append(copy);
+      head.append(element("span", `badge ${commit.kind}`, statusLabel(commit.kind)));
+      root.append(head);
+
+      if (!commit.number_matches_subject) {
+        root.append(element(
+          "div", "warning",
+          `This is generation ${commit.generation} by commit count, although its subject reports gen ${commit.reported_generation}.`
+        ));
+      }
+
+      if (commit.kind === "died") {
+        const alert = element("section", "death-alert");
+        const exit = details.exit_code === null ? "unknown exit" : `exit ${details.exit_code}`;
+        alert.append(element("h3", "", `Generation died · ${exit}`));
+        alert.append(element("p", "", "The kernel reverted the failed generation. Stderr tail follows verbatim."));
+        alert.append(element("pre", "stderr", details.stderr_tail || "No stderr tail was recorded."));
+        root.append(alert);
+      }
+
+      root.append(fileChips(details.touched_files));
+
+      const journal = section("Journal entry", "kernel record");
+      journal.append(details.journal.found
+        ? element("pre", "", details.journal.raw)
+        : element("pre", "empty", "No matching journal entry was present at this commit."));
+      root.append(journal);
+
+      const organism = section("organism.el", "against the immediately preceding commit");
+      organism.append(diffBlock(details.organism_diff, "organism.el did not change in this generation."));
+      root.append(organism);
+
+      const files = section("Other changed files", "artifacts and state are shown even when organism.el is unchanged");
+      const list = element("div", "file-list");
+      if (!details.other_files.length) {
+        list.append(element("pre", "empty", "No files other than organism.el and journal.md changed."));
+      } else {
+        for (const file of details.other_files) {
+          list.append(fileCard(file, commit.generation));
+        }
+      }
+      files.append(list);
+      root.append(files);
+    }
+
+    async function selectGeneration(sha) {
+      state.selectedSha = sha;
+      for (const item of document.querySelectorAll("button.timeline-event")) {
+        item.classList.toggle("active", item.dataset.sha === sha);
+      }
+      $("detail").replaceChildren(element("div", "loading", "Reading generation…"));
+      try {
+        renderDetails(await requestJson(`/api/generation/${encodeURIComponent(sha)}`));
+      } catch (error) {
+        $("detail").replaceChildren(element("div", "error", error.message));
+      }
+    }
+
+    async function compareGenerations() {
+      const before = $("compare-from").value;
+      const after = $("compare-to").value;
+      const panel = $("comparison");
+      panel.hidden = false;
+      $("comparison-title").textContent = "Reading generation diff…";
+      $("comparison-files").replaceChildren();
+      $("comparison-diff").replaceChildren();
+      try {
+        const value = await requestJson(
+          `/api/diff?from=${encodeURIComponent(before)}&to=${encodeURIComponent(after)}`
+        );
+        $("comparison-title").textContent =
+          `Generation ${value.from.generation} → generation ${value.to.generation}`;
+        const files = value.files.map((path) => ({ status: "", path }));
+        const chips = fileChips(files, "Changed files");
+        chips.id = "comparison-files";
+        $("comparison-files").replaceWith(chips);
+        $("comparison-diff").append(diffBlock(value.diff));
+        panel.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (error) {
+        $("comparison-title").textContent = "Could not compare generations";
+        $("comparison-diff").append(element("div", "error", error.message));
+      }
+    }
+
+    async function initialize() {
+      try {
+        const summary = await requestJson("/api/lineage");
+        state.summary = summary;
+        $("lineage-path").textContent = summary.worktree;
+        $("lineage-path").title = `git directory: ${summary.git_dir}`;
+        $("generation-count").textContent = summary.generation_count;
+        $("commit-count").textContent = summary.commit_count;
+        renderTimeline(summary);
+        renderArtifactIndex(summary);
+        populateComparison(summary);
+        if (summary.generations.length) {
+          await selectGeneration(summary.generations.at(-1).sha);
+        } else {
+          $("detail").replaceChildren(element("div", "error", "No generation commits were found."));
+        }
+      } catch (error) {
+        $("detail").replaceChildren(element("div", "error", error.message));
+      }
+    }
+
+    $("compare-button").addEventListener("click", compareGenerations);
+    $("comparison-close").addEventListener("click", () => { $("comparison").hidden = true; });
+    initialize();
+  </script>
+</body>
+</html>
