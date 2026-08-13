@@ -105,6 +105,25 @@ Runs are branches of a lineage repo, all sharing the seed commit, never merged.
 Lineages are results, not code; merging one into the instrument's history would
 be pasting the lab notebook into the firmware.
 
+Lineages are deliberately **not submodules**. A submodule is a pointer file
+living in this repository, and it would go stale every generation — leaving a
+choice between one pointer commit per generation, which puts the organism's
+history back into the instrument's and is exactly the mistake that broke the
+counter, or a pointer that is permanently wrong. Results are not dependencies.
+
+`LINEAGES.md` lists the published ones. For building analysis tools without a
+network or a second checkout, `viewer/testdata/sample-lineage.bundle` is a
+frozen real lineage in a single file:
+
+```sh
+git clone viewer/testdata/sample-lineage.bundle /tmp/sample
+```
+
+It contains every case a reader must handle — a seed, a death with a backtrace,
+no-change generations, a changed generation, and human `external edit` commits
+interleaved so that anything counting positionally gets the generation number
+wrong.
+
 ---
 
 ## The contract
