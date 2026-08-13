@@ -240,6 +240,17 @@ G diff HEAD~1 -- organism.el                 # what the last generation did
 cat ~/ouroboros-lineage/journal.md           # the kernel's account
 ```
 
+## Lineage viewer
+
+`viewer/server.py` is a local, read-only web viewer for this record: the full
+timeline, generation and pairwise diffs, matching journal entries, state, and
+rejected successors. Try it against the frozen fixture:
+
+```sh
+git clone viewer/testdata/sample-lineage.bundle /tmp/sample
+python3 viewer/server.py /tmp/sample
+```
+
 ---
 
 ## Deliberate non-features

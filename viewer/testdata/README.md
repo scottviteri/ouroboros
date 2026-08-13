@@ -18,14 +18,15 @@ than against a live lineage that keeps advancing under you.
 
 Every case a reader of a lineage has to handle:
 
-- **`seed`** — the first commit, the hand-written organism.
+- **`seed`** — the first commit, containing the initial organism snapshot.
 - **`gen N: died (exit R); reverted`** — a generation that failed to load. The
   journal entry carries the exit code and the tail of stderr, verbatim. This is
   the most information-dense entry type and the easiest to render badly.
 - **`gen N: no-change`** — the organism ran, exited zero, and altered nothing.
   Committed with `--allow-empty` so the count stays honest.
 - **`gen N: changed +A/-B`** — the organism rewrote itself.
-- **`external edit: ...`** — a human touching the worktree between generations.
+- **`external edit: ...`** — a change entering the worktree from outside the
+  generation loop.
 
 That last one is the trap. External edits interleave with generations, so
 **generation number is the count of commits whose subject starts with `gen `**,
