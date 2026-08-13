@@ -2,3 +2,7 @@
 # machine happened to run them.
 kernel.log
 analysis/*.txt
+
+# Kernel broker/test bytecode.
+__pycache__/
+*.pyc

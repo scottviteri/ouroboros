@@ -2,36 +2,110 @@
 # kernel.sh — immutable harness. Lives in the kernel repo; runs OUTSIDE the sandbox.
 # Contract: one generation = one load of organism.el = exactly one lineage commit.
 #
-# The kernel supplies senses, never answers: it records raw observable fact and
-# offers no instructions, budgets or advice. The only judgement it makes is exit
-# status, and the only thing it enforces is that a nonzero exit changes nothing.
+# The kernel mediates capabilities but supplies no content of its own. The
+# organism can ask an opaque model service for text; provider credentials and
+# protocol details remain outside. The kernel records raw observable fact, and
+# its only judgement is exit status: a nonzero exit changes nothing.
 set -euo pipefail
 
+KERNEL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LINEAGE="${LINEAGE:?path to lineage worktree}"     # e.g. ~/ouroboros-lineage
 GITDIR="${GITDIR:-$LINEAGE.git}"                   # separate git dir, OUTSIDE the worktree
 JOURNAL="$LINEAGE/journal.md"
 GENERATIONS="${GENERATIONS:-10}"
 WALL="${WALL:-600}"                                # wallclock seconds per generation
 CPU="${CPU:-120}"                                  # CPU seconds per generation
-LOG="$(mktemp)"
+MODEL_PROVIDER="${MODEL_PROVIDER:-anthropic}"
+MODEL_NAME="${MODEL_NAME:-}"
+MODEL_MAX_OUTPUT_TOKENS="${MODEL_MAX_OUTPUT_TOKENS:-12000}"
+MODEL_REQUEST_TIMEOUT="${MODEL_REQUEST_TIMEOUT:-600}"
+MODEL_MAX_PROMPT_BYTES="${MODEL_MAX_PROMPT_BYTES:-4194304}"
+PYTHON="${PYTHON:-python3}"
+MODEL_BROKER="$KERNEL_DIR/model_broker.py"
 
 G() { git --git-dir="$GITDIR" --work-tree="$LINEAGE" "$@"; }
 
-# --- environment detection --------------------------------------------------
-# The sandbox has to work on at least two very different hosts: Arch, where
-# /etc/ssl/certs/ca-certificates.crt is a symlink into /etc/ca-certificates,
-# and Debian/Ubuntu, where it is a real file. Binding only /etc/ssl on Arch
-# gives `curl: (77) error adding trust anchors` and the organism then dies
-# every generation for a reason that has nothing to do with it — which would
-# fill the journal with deaths the harness caused.
-#
-# --ro-bind-try is a no-op when the path is absent, so the same invocation
-# covers both. These are collected as an array so `--doctor` can report what
-# it resolved to rather than leaving it implicit.
-CERT_BINDS=()
-for p in /etc/ca-certificates /etc/pki /etc/nsswitch.conf /etc/hosts; do
-  [ -e "$p" ] && CERT_BINDS+=(--ro-bind-try "$p" "$p")
-done
+case "$MODEL_PROVIDER" in
+  anthropic)
+    API_KEY_NAME=ANTHROPIC_API_KEY
+    API_ORIGIN=https://api.anthropic.com
+    MODEL_NAME="${MODEL_NAME:-claude-opus-5}"
+    ;;
+  openai)
+    API_KEY_NAME=OPENAI_API_KEY
+    API_ORIGIN=https://api.openai.com
+    MODEL_NAME="${MODEL_NAME:-gpt-5.6}"
+    ;;
+  *)
+    echo "kernel: MODEL_PROVIDER must be 'anthropic' or 'openai'" >&2
+    exit 2
+    ;;
+esac
+
+API_KEY="${!API_KEY_NAME:-}"
+LOG="$(mktemp)"
+BROKER_LOG="$(mktemp)"
+BROKER_PID=""
+BROKER_DIR=""
+BROKER_SOCKET=""
+
+stop_broker() {
+  if [ -n "$BROKER_PID" ]; then
+    kill "$BROKER_PID" 2>/dev/null || true
+    wait "$BROKER_PID" 2>/dev/null || true
+    BROKER_PID=""
+  fi
+  if [ -n "$BROKER_SOCKET" ]; then
+    rm -f -- "$BROKER_SOCKET"
+    BROKER_SOCKET=""
+  fi
+  if [ -n "$BROKER_DIR" ]; then
+    rmdir -- "$BROKER_DIR" 2>/dev/null || true
+    BROKER_DIR=""
+  fi
+}
+
+cleanup() {
+  stop_broker
+  rm -f -- "$LOG" "$BROKER_LOG"
+}
+trap cleanup EXIT
+
+start_broker() {
+  stop_broker
+  : > "$BROKER_LOG"
+  BROKER_DIR="$(mktemp -d)"
+  BROKER_SOCKET="$BROKER_DIR/model.sock"
+
+  # Configuration, including the selected credential, crosses a private pipe
+  # into the trusted broker. It never appears in argv, a file, or the sandbox.
+  {
+    printf '%s\n' "$MODEL_PROVIDER"
+    printf '%s\n' "$MODEL_NAME"
+    printf '%s\n' "$API_KEY"
+    printf '%s\n' "$MODEL_MAX_OUTPUT_TOKENS"
+    printf '%s\n' "$MODEL_REQUEST_TIMEOUT"
+    printf '%s\n' "$MODEL_MAX_PROMPT_BYTES"
+  } | env -i PATH="$PATH" "$PYTHON" "$MODEL_BROKER" --socket "$BROKER_SOCKET" \
+        >"$BROKER_LOG" 2>&1 &
+  BROKER_PID=$!
+
+  for _ in {1..100}; do
+    [ -S "$BROKER_SOCKET" ] && return 0
+    if ! kill -0 "$BROKER_PID" 2>/dev/null; then
+      echo "kernel: model broker exited during startup" >&2
+      tail -n 10 "$BROKER_LOG" >&2
+      stop_broker
+      return 1
+    fi
+    sleep 0.05
+  done
+
+  echo "kernel: model broker did not become ready" >&2
+  tail -n 10 "$BROKER_LOG" >&2
+  stop_broker
+  return 1
+}
 
 doctor() {
   echo "host:        $( . /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}")"
@@ -39,52 +113,82 @@ doctor() {
   echo "bwrap:       $(command -v bwrap || echo MISSING)"
   echo "curl:        $(command -v curl || echo MISSING)"
   echo "git:         $(command -v git || echo MISSING)"
-  echo "ca bundle:   $(readlink -f /etc/ssl/certs/ca-certificates.crt 2>/dev/null || echo 'not found')"
-  echo "extra binds: ${CERT_BINDS[*]:-none}"
+  echo "python:      $("$PYTHON" --version 2>&1 || echo MISSING)"
   echo "userns:      $(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || echo 'n/a (usually enabled)')"
-  echo "API key:     $([ -n "${ANTHROPIC_API_KEY:-}" ] && echo "present (${#ANTHROPIC_API_KEY} chars)" || echo MISSING)"
+  echo "provider:    $MODEL_PROVIDER (kernel-only)"
+  echo "model:       $MODEL_NAME (kernel-only)"
+  echo "$API_KEY_NAME: $([ -n "$API_KEY" ] && echo "present (${#API_KEY} chars)" || echo MISSING)"
   echo "lineage:     $LINEAGE  ($([ -d "$LINEAGE" ] && echo exists || echo MISSING))"
   echo "git dir:     $GITDIR  ($([ -d "$GITDIR" ] && echo exists || echo MISSING))"
-  echo -n "tls reachability: "
-  if bwrap --clearenv --setenv PATH /usr/bin:/bin \
-       --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
-       --symlink usr/bin /bin --symlink usr/sbin /sbin \
-       --ro-bind /etc/resolv.conf /etc/resolv.conf --ro-bind /etc/ssl /etc/ssl \
-       "${CERT_BINDS[@]}" \
-       --proc /proc --dev /dev --tmpfs /tmp --unshare-pid --die-with-parent \
-       curl -sS -o /dev/null --max-time 20 https://api.anthropic.com/ 2>/dev/null
-  then echo "ok"; else echo "FAILED — the organism would die every generation"; fi
+  echo -n "host API reachability: "
+  if curl -sS -o /dev/null --max-time 20 "$API_ORIGIN/" 2>/dev/null
+  then echo "ok"; else echo "FAILED"; fi
+
+  echo -n "sandbox model syscall: "
+  if [ -z "$API_KEY" ]; then
+    echo "SKIPPED — $API_KEY_NAME is missing"
+  elif start_broker &&
+       bwrap --clearenv --setenv HOME /work --setenv PATH /usr/bin:/bin \
+         --ro-bind /usr /usr \
+         --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
+         --symlink usr/bin /bin --symlink usr/sbin /sbin \
+         --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+         --ro-bind "$BROKER_DIR" /kernel \
+         --unshare-net --unshare-pid --unshare-ipc --unshare-uts \
+         --die-with-parent \
+         curl -sS --max-time 5 --unix-socket /kernel/model.sock \
+           http://kernel/__probe__ >/dev/null 2>&1
+  then
+    echo "ok (IP network disabled)"
+  else
+    echo "FAILED"
+  fi
+  stop_broker
 }
 
 if [ "${1:-}" = "--doctor" ]; then doctor; exit 0; fi
 
+if [ -z "$API_KEY" ]; then
+  echo "kernel: $API_KEY_NAME is required for MODEL_PROVIDER=$MODEL_PROVIDER" >&2
+  exit 2
+fi
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+  echo "kernel: $PYTHON is required for the model broker" >&2
+  exit 2
+fi
+if [ ! -r "$MODEL_BROKER" ]; then
+  echo "kernel: model broker not found at $MODEL_BROKER" >&2
+  exit 2
+fi
+
 for _ in $(seq "$GENERATIONS"); do
-  # absorb out-of-band (human) edits so each generation starts from a committed state
+  # absorb out-of-loop edits so each generation starts from a committed state
   G add -A
   G diff --cached --quiet || G commit -qm "external edit"
 
   gen=$(( $(G rev-list --count --grep='^gen ' HEAD) + 1 ))
 
+  : > "$LOG"
+  start_broker
+
   set +e
   timeout "$WALL" bwrap \
     --clearenv \
-    --setenv ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY:?}" \
     --setenv HOME /work --setenv PATH /usr/bin:/bin \
     --ro-bind /usr /usr \
     --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
     --symlink usr/bin /bin --symlink usr/sbin /sbin \
-    --ro-bind /etc/resolv.conf /etc/resolv.conf \
-    --ro-bind /etc/ssl /etc/ssl \
-    "${CERT_BINDS[@]}" \
     --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+    --ro-bind "$BROKER_DIR" /kernel \
     --bind "$LINEAGE" /work \
     --ro-bind "$JOURNAL" /work/journal.md \
-    --unshare-pid --unshare-ipc --unshare-uts \
+    --unshare-net --unshare-pid --unshare-ipc --unshare-uts \
     --die-with-parent \
     sh -c "ulimit -t $CPU; exec emacs -Q --batch -l /work/organism.el" \
     >"$LOG" 2>&1
   rc=$?
   set -e
+  stop_broker
 
   if [ "$rc" -ne 0 ]; then
     # DEATH: discard every write this generation made; restore last surviving organism
@@ -115,5 +219,3 @@ for _ in $(seq "$GENERATIONS"); do
     G commit -qm "gen $gen: changed ${stat:-+0/-0}"
   fi
 done
-
-rm -f "$LOG"
