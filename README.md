@@ -4,23 +4,25 @@ An Emacs Lisp file whose modification operator is a language model, and whose
 prompt is a variable inside itself.
 
 This repository is the **instrument**. The lineages it produces live in separate
-repositories, because they have a different author.
+repositories because the instrument and its experimental records occupy
+different layers.
 
 ---
 
 ## What this is
 
-`organism.el` is a program that, when loaded, sends its own source to a model,
-receives a complete replacement, and writes that replacement over itself. The
-instruction it sends — `organism-prompt` — is a `defvar` in the same file. So a
-generation can rewrite the code, or rewrite the thing that determines how the
-code will be rewritten, or both.
+`organism.el` is a program that, when loaded, sends its own source through a
+kernel model syscall, receives a complete replacement, and writes that
+replacement over itself. The instruction it sends — `organism-prompt` — is a
+`defvar` in the same file. So a generation can rewrite the code, or rewrite the
+thing that determines how the code will be rewritten, or both.
 
-`kernel.sh` runs it. The kernel is deliberately outside, deliberately dumb, and
-deliberately not Lisp.
+`kernel.sh` runs it and mediates its capabilities. The kernel is deliberately
+outside, deliberately dumb, and deliberately not Lisp.
 
-The design goal is **emergence under constraint**: the kernel supplies senses —
-observable raw facts — and never answers. No instructions, no budgets, no advice.
+The design goal is **emergence under constraint**: the kernel exposes a small,
+stable interface and never contributes cognitive content of its own. No
+instructions, no advice, and no provider-specific authority enters the organism.
 
 ---
 
@@ -78,15 +80,15 @@ the single design decision the whole thing rests on.
 
 ---
 
-## Two repositories, two authors
+## Two repositories, two layers
 
 ```
-ouroboros/                  # this repo — the instrument, human-authored
+ouroboros/                  # this repo — the instrument, outside the generation loop
   kernel.sh
   README.md
   analysis/                 # run notes (gitignored by default)
 
-ouroboros-lineage/          # a lineage — kernel-authored, separate repo
+ouroboros-lineage/          # a lineage — the generation-loop record, separate repo
   organism.el               # the seed, then whatever it becomes
   journal.md                # kernel-appended, read-only inside the sandbox
 
@@ -94,8 +96,8 @@ ouroboros-lineage.git/      # separate git dir, OUTSIDE the worktree
 ```
 
 Interleaving the two histories is what broke the original generation counter:
-human commits and generation commits were being counted together. They are two
-records with two authors and belong apart.
+out-of-loop commits and generation commits were being counted together. They
+record different layers of the system and belong apart.
 
 The lineage's git directory lives outside the bind-mounted worktree via
 `git init --separate-git-dir`. If `.git` rode into the writable mount, the
@@ -120,9 +122,9 @@ git clone viewer/testdata/sample-lineage.bundle /tmp/sample
 ```
 
 It contains every case a reader must handle — a seed, a death with a backtrace,
-no-change generations, a changed generation, and human `external edit` commits
-interleaved so that anything counting positionally gets the generation number
-wrong.
+no-change generations, a changed generation, and out-of-loop `external edit`
+commits interleaved so that anything counting positionally gets the generation
+number wrong.
 
 ---
 
@@ -173,14 +175,40 @@ generation N and the **died** appears at N+1. That adjacency, plus the diffstat
 pointing at the suspect edit, is the learnable pattern. It is left as pure
 observation.
 
-The journal is **kernel-authored only** and is read-only inside the sandbox.
+The journal is **controlled only by the kernel** and is read-only inside the
+sandbox.
 The organism has no append channel of any kind. Its self-expression lives in
 its source, which it fully controls; the ledger is the kernel's account of it.
 Taking away self-narration in the ledger is the deliberate constraint:
 self-knowledge must come from evidence.
 
 Generation number is the count of commits whose subject starts with `gen `, so
-the journal is derivable from `git log` and human edits cannot skew it.
+the journal is derivable from `git log` and out-of-loop edits cannot skew it.
+
+---
+
+## The model syscall
+
+The organism does not have an API key and cannot make IP network connections.
+It has one model capability, exposed through a read-only Unix socket:
+
+```text
+generate(prompt, requested output tokens) -> text or error
+```
+
+On the wire this is a `POST /generate` whose body is the raw UTF-8 prompt and
+whose `X-Ouroboros-Max-Output-Tokens` header is the requested maximum. A
+successful response body is raw UTF-8 model output. That is the entire contract.
+
+For each generation, `kernel.sh` starts `model_broker.py` outside the sandbox.
+The broker owns the selected credential, chooses the configured provider and
+model, translates the request into that provider's protocol, and reduces the
+response back to text. The credential enters the broker through a private pipe;
+it is never placed in process arguments, a file, or the sandbox. The broker and
+its private socket are destroyed when the generation ends.
+
+Changing Claude to GPT, a local model, or a future backend therefore changes the
+instrument, not the organism. The same lineage code sees the same syscall.
 
 ---
 
@@ -188,13 +216,12 @@ the journal is derivable from `git log` and human edits cannot skew it.
 
 Each generation runs under `bwrap`:
 
-- `--clearenv` with an explicit allow-list: only `ANTHROPIC_API_KEY`, `HOME`
-  and `PATH` cross the boundary. Without this the sandbox inherits the entire
-  parent environment — on the machine this was developed on, that meant twelve
-  API credentials were visible inside.
-- `/usr` read-only. `/etc` is **not** bound wholesale; only `resolv.conf`,
-  `/etc/ssl`, and (on distributions that need them) `/etc/ca-certificates` and
-  `/etc/nsswitch.conf` — DNS and TLS roots, nothing else.
+- `--clearenv` with only `HOME` and `PATH` restored. No provider, model, API key,
+  or other host credential crosses the boundary.
+- `--unshare-net`: the organism has no IP network. It does not receive DNS
+  configuration or TLS roots because it has no reason to contact an API.
+- `/usr` read-only. The broker's private directory is mounted read-only at
+  `/kernel`, exposing only the Unix socket capability.
 - Only the lineage worktree is writable, bound at `/work`.
 - `journal.md` ro-bound over that writable mount: reads succeed, writes fail
   with EROFS, sibling files remain writable.
@@ -202,31 +229,34 @@ Each generation runs under `bwrap`:
   catches spinning.
 - PID, IPC and UTS namespaces unshared; `--die-with-parent`.
 
-Network stays open in Phase 1, because the organism calls the API directly.
-That is the one deliberate hole.
-
-### A distribution note
-
-Arch and its derivatives symlink `/etc/ssl/certs/ca-certificates.crt` into
-`/etc/ca-certificates/extracted/`. Binding only `/etc/ssl` therefore breaks TLS
-with `curl: (77) error adding trust anchors`, and the organism dies every
-generation for an environmental reason. The `--ro-bind-try` lines for
-`/etc/ca-certificates` and `/etc/nsswitch.conf` handle this and are harmless on
-distributions that don't need them.
+The wall and CPU clocks remain kernel policy rather than part of the model
+syscall. Strong memory and process ceilings can be added at the same boundary
+with cgroup v2 without changing organism code or the syscall contract.
 
 ---
 
 ## Running it
 
 ```sh
+# Anthropic is the kernel's default backend.
 export ANTHROPIC_API_KEY=...
 LINEAGE=~/ouroboros-lineage GENERATIONS=5 ./kernel.sh
+
+# Or back the same organism syscall with an OpenAI model.
+export OPENAI_API_KEY=...
+LINEAGE=~/ouroboros-lineage MODEL_PROVIDER=openai \
+  MODEL_NAME=gpt-5.6 GENERATIONS=5 ./kernel.sh
 ```
 
 | variable | default | meaning |
 |---|---|---|
 | `LINEAGE` | *required* | path to the lineage worktree |
 | `GITDIR` | `$LINEAGE.git` | separate git dir, outside the worktree |
+| `MODEL_PROVIDER` | `anthropic` | kernel backend: `anthropic` or `openai` |
+| `MODEL_NAME` | provider default | kernel-side model ID |
+| `MODEL_MAX_OUTPUT_TOKENS` | 12000 | maximum granted per model syscall |
+| `MODEL_REQUEST_TIMEOUT` | 600 | backend request timeout in seconds |
+| `MODEL_MAX_PROMPT_BYTES` | 4194304 | maximum syscall prompt size |
 | `GENERATIONS` | 10 | generations this run |
 | `WALL` | 600 | wallclock seconds per generation |
 | `CPU` | 120 | CPU seconds per generation |

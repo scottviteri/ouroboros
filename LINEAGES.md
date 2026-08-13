@@ -2,7 +2,7 @@
 
 This repository is the instrument. A **lineage** is what one run of it produces:
 a git repository whose history is the organism rewriting itself, one commit per
-generation, written by the kernel rather than by a person.
+generation, with each result recorded by the kernel.
 
 Lineages are deliberately *not* submodules of this repository. A submodule is a
 pointer file living here, and it would go stale every generation — leaving a
@@ -43,8 +43,8 @@ git clone viewer/testdata/sample-lineage.bundle /tmp/sample
 
 It contains every case a reader has to handle: a seed, a generation that died
 with a backtrace, generations that made no change, a generation that changed the
-organism, and human `external edit` commits interleaved with the generations so
-that anything counting positionally gets it wrong.
+organism, and out-of-loop `external edit` commits interleaved with the
+generations so that anything counting positionally gets it wrong.
 
 It is a **fixture, not a lineage** — nothing advances it, so unlike a submodule
 pointer it cannot go stale. Regenerate it deliberately with
