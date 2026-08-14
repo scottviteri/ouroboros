@@ -26,9 +26,36 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / ".ouroboros-lineage.json"
             fingerprint = "a" * 64
-            runtime.write_metadata(path, fingerprint, "b" * 64)
-            self.assertEqual(runtime.read_fingerprint(path), fingerprint)
+            runtime.write_metadata(
+                path,
+                fingerprint,
+                "b" * 64,
+                "git@example.invalid:instrument.git",
+                "agent/test",
+                "c" * 40,
+            )
+            self.assertEqual(
+                runtime.read_field(path, "instrument_fingerprint"), fingerprint
+            )
+            self.assertEqual(runtime.read_field(path, "instrument_commit"), "c" * 40)
             self.assertEqual(json.loads(path.read_text())["schema"], runtime.LINEAGE_SCHEMA)
+
+    def test_observation_metadata_pins_instrument_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metadata.json"
+            runtime.write_observation_metadata(
+                path,
+                "lineage-test",
+                "observations/lineage-test",
+                "git@example.invalid:instrument.git",
+                "agent/test",
+                "d" * 40,
+                "a" * 64,
+                "b" * 64,
+            )
+            self.assertEqual(
+                runtime.read_observation_field(path, "instrument_commit"), "d" * 40
+            )
 
     def make_archive(self, path: Path, entries: list[tuple[str, bytes]]) -> None:
         with tarfile.open(path, "w") as archive:

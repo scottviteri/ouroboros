@@ -15,17 +15,25 @@ permanently wrong. Results are not dependencies.
 
 | lineage | physics | state |
 |---|---|---|
-| [ouroboros-lineage](https://github.com/scottviteri/ouroboros-lineage) | pre-fingerprinted, direct-worktree physics | historical; do not continue with current `main` |
+| [`lineage-original`](https://github.com/scottviteri/ouroboros-lineage/tree/lineage-original) | pre-fingerprinted, direct-worktree physics | historical lineage formerly stored on remote `main` |
+| [`lineage-gpt-02`](https://github.com/scottviteri/ouroboros-lineage/tree/lineage-gpt-02) | fingerprinted, bounded disposable worktree | completed under instrument `c9b1deb`; do not extend with a different commit |
+| [`lineage-claude-01`](https://github.com/scottviteri/ouroboros-lineage/tree/lineage-claude-01) | fingerprinted, bounded disposable worktree | completed under instrument `c9b1deb`; do not extend with a different commit |
+| `lineage-gpt-03` | exact-commit-pinned, disclosed constraints, trusted observations | next GPT run |
+| `lineage-claude-02` | exact-commit-pinned, disclosed constraints, trusted observations | next Claude run |
 | [`primordial` branch of this repo](https://github.com/scottviteri/ouroboros/tree/primordial) | original, superseded | fossil, see `PRIMORDIAL.md` there |
 
-Current `main` deliberately refuses to run a lineage whose root commit does not
-contain its exact trusted-runtime fingerprint. Start a new result with
-`init-lineage.sh`; do not migrate a historical lineage onto the new kernel.
+The lineage repository's remote `main` contains only its viewer-facing README.
+Hereditary histories live on `lineage-*` branches; trusted external records live
+on matching `observations/lineage-*` branches. Current instrument code refuses
+to run a lineage unless both roots identify its exact instrument commit and
+trusted-runtime fingerprint. Start a new result with `init-lineage.sh`; do not
+migrate a historical lineage onto a new kernel.
 
 ## Working with a lineage
 
 ```sh
-git clone https://github.com/scottviteri/ouroboros-lineage /tmp/lineage
+git clone --branch lineage-gpt-03 \
+  https://github.com/scottviteri/ouroboros-lineage /tmp/lineage
 git -C /tmp/lineage log --oneline          # the phylogeny
 cat /tmp/lineage/journal.md                # the kernel's account
 ```

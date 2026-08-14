@@ -36,6 +36,7 @@ class KernelBoundaryTests(unittest.TestCase):
         root = Path(self.tempdir.name)
         self.lineage = root / "lineage"
         self.gitdir = root / "lineage.git"
+        self.observation = root / "lineage.observations"
         self.fakebin = root / "bin"
         self.args_file = root / "bwrap-args"
         self.scope_args_file = root / "systemd-run-args"
@@ -48,6 +49,12 @@ class KernelBoundaryTests(unittest.TestCase):
             {
                 "LINEAGE": str(self.lineage),
                 "GITDIR": str(self.gitdir),
+                "OBSERVATION": str(self.observation),
+                "LINEAGE_BRANCH": "lineage-test",
+                "OBSERVATION_BRANCH": "observations/lineage-test",
+                "OUROBOROS_INSTRUMENT_COMMIT": "a" * 40,
+                "OUROBOROS_INSTRUMENT_REF": "agent/test",
+                "OUROBOROS_INSTRUMENT_REPOSITORY": "git@example.invalid:ouroboros.git",
                 "OUROBOROS_GIT_NAME": "Kernel Test",
                 "OUROBOROS_GIT_EMAIL": "kernel@example.invalid",
             }
@@ -76,14 +83,51 @@ printf '%s\n' "$@" > "$KERNEL_TEST_SCOPE_ARGS"
 if [ "${KERNEL_TEST_SCOPE_FAIL:-0}" = 1 ]; then
   exit 1
 fi
+scope=0
+stdout=/dev/null
+stderr=/dev/null
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --user|--scope|--quiet|--collect|--expand-environment=no) shift ;;
-    -p) shift 2 ;;
+    --scope) scope=1; shift ;;
+    --user|--quiet|--collect|--remain-after-exit|--expand-environment=no) shift ;;
+    --unit=*) shift ;;
+    -p)
+      case "$2" in
+        StandardOutput=truncate:*) stdout=${2#StandardOutput=truncate:} ;;
+        StandardError=truncate:*) stderr=${2#StandardError=truncate:} ;;
+      esac
+      shift 2
+      ;;
     *) break ;;
   esac
 done
-exec "$@"
+if [ "$scope" -eq 1 ]; then
+  exec "$@"
+fi
+set +e
+"$@" > "$stdout" 2> "$stderr"
+status=$?
+printf '%s\n' "$status" > "$KERNEL_TEST_SERVICE_STATUS"
+exit 0
+""",
+        )
+        self.write_executable(
+            "systemctl",
+            """#!/bin/sh
+case "$2" in
+  show)
+    status=$(cat "$KERNEL_TEST_SERVICE_STATUS" 2>/dev/null || printf 0)
+    if [ "$status" -eq 0 ]; then
+      active=active; sub=exited; result=success
+    else
+      active=failed; sub=failed; result=exit-code
+    fi
+    printf 'ActiveState=%s\nSubState=%s\n' "$active" "$sub"
+    printf 'Result=%s\nExecMainCode=1\nExecMainStatus=%s\n' "$result" "$status"
+    printf 'CPUUsageNSec=12000000\nMemoryPeak=4194304\nOOMKills=%s\n' "${KERNEL_TEST_OOM_KILLS:-0}"
+    ;;
+  stop|reset-failed) exit 0 ;;
+esac
 """,
         )
 
@@ -93,6 +137,8 @@ exec "$@"
                 "PATH": f"{self.fakebin}:{self.env['PATH']}",
                 "LINEAGE": str(self.lineage),
                 "GITDIR": str(self.gitdir),
+                "OBSERVATION": str(self.observation),
+                "OBSERVATION_BRANCH": "observations/lineage-test",
                 "GENERATIONS": "1",
                 "MODEL_PROVIDER": "openai",
                 "MODEL_NAME": "gpt-5.6",
@@ -100,7 +146,11 @@ exec "$@"
                 "ANTHROPIC_API_KEY": "unselected-anthropic-secret",
                 "KERNEL_TEST_ARGS": str(self.args_file),
                 "KERNEL_TEST_SCOPE_ARGS": str(self.scope_args_file),
+                "KERNEL_TEST_SERVICE_STATUS": str(root / "service-status"),
                 "KERNEL_TEST_RESULT": str(self.sandbox_result),
+                "OUROBOROS_INSTRUMENT_COMMIT": "a" * 40,
+                "OUROBOROS_INSTRUMENT_REF": "agent/test",
+                "OUROBOROS_INSTRUMENT_REPOSITORY": "git@example.invalid:ouroboros.git",
             }
         )
 
@@ -129,7 +179,8 @@ exec "$@"
                 "git", "show", f"{root}:.ouroboros-lineage.json", cwd=self.lineage
             ).stdout
         )
-        self.assertEqual(metadata["schema"], "ouroboros-lineage/v1")
+        self.assertEqual(metadata["schema"], "ouroboros-lineage/v2")
+        self.assertEqual(metadata["instrument_commit"], "a" * 40)
         self.assertEqual(len(metadata["instrument_fingerprint"]), 64)
         self.assertEqual(
             run("git", "log", "--format=%s", cwd=self.lineage).stdout.splitlines(),
@@ -164,6 +215,8 @@ exec "$@"
         env = self.env | {
             "LINEAGE": str(changed_lineage),
             "GITDIR": str(changed_gitdir),
+            "OBSERVATION": str(Path(self.tempdir.name) / "changed-observations"),
+            "OBSERVATION_BRANCH": "observations/changed-lineage",
         }
         run("bash", str(instrument / "init-lineage.sh"), cwd=instrument, env=env)
         with (instrument / "sandbox_runner.sh").open("a") as runner:
@@ -177,6 +230,11 @@ exec "$@"
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("start a new lineage", result.stderr)
+
+    def test_different_instrument_commit_cannot_continue_lineage(self) -> None:
+        result = self.invoke(OUROBOROS_INSTRUMENT_COMMIT="b" * 40)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("instrument commit differs", result.stderr)
 
     def test_generation_uses_disposable_size_limited_worktree(self) -> None:
         result = self.invoke()
@@ -243,6 +301,24 @@ exec "$@"
             "staged writes discarded",
             run("git", "log", "-1", "--format=%s", cwd=self.lineage).stdout,
         )
+        observation = json.loads(
+            (self.observation / "generations/0001.json").read_text()
+        )
+        self.assertEqual(observation["outcome"], "process_exit")
+        self.assertEqual(observation["exit_status"], 9)
+        self.assertEqual(observation["cpu_usage_nsec"], 12000000)
+        self.assertEqual(observation["memory_peak_bytes"], 4194304)
+
+    def test_cgroup_oom_is_distinguished_from_generic_signal_death(self) -> None:
+        result = self.invoke(
+            KERNEL_TEST_BWRAP_EXIT="137", KERNEL_TEST_OOM_KILLS="1"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observation = json.loads(
+            (self.observation / "generations/0001.json").read_text()
+        )
+        self.assertEqual(observation["outcome"], "cgroup_oom")
+        self.assertEqual(observation["oom_kills"], 1)
 
     def test_other_file_change_gets_unambiguous_journal_message(self) -> None:
         (self.sandbox_result / "state.el").write_text("(:generation 1)\n")

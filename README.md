@@ -4,9 +4,9 @@ A Git-recorded mutable filesystem whose fixed boot program is Emacs Lisp, whose
 modification operator is a language model, and whose prompt is a variable inside
 itself.
 
-This repository is the **instrument**. The lineages it produces live in separate
-repositories because the instrument and its experimental records occupy
-different layers.
+This repository is the **instrument**. The lineages it produces live as separate
+branches of the `ouroboros-lineage` repository because the instrument and its
+experimental records occupy different layers.
 
 ---
 
@@ -92,7 +92,7 @@ the single design decision the whole thing rests on.
 
 ---
 
-## Two repositories, two layers
+## Two repositories, three kinds of branch
 
 ```
 ouroboros/                  # this repo — the instrument, outside the generation loop
@@ -108,10 +108,14 @@ ouroboros/                  # this repo — the instrument, outside the generati
 ouroboros-lineage/          # a lineage — the generation-loop record, separate repo
   organism.el               # fixed boot path; contents belong to the lineage
   journal.md                # kernel-owned; exposed read-only at /kernel/journal.md
-  .ouroboros-lineage.json   # root seed and instrument fingerprint
+  .ouroboros-lineage.json   # root seed plus exact instrument commit/fingerprint
   ...                       # any other lineage-created files and directories
 
 ouroboros-lineage.git/      # separate git dir, OUTSIDE the worktree
+
+ouroboros-lineage observations/  # trusted local observer repo, never mounted
+  metadata.json                  # exact instrument commit/ref/repository
+  generations/0001.json          # resource, outcome, and model-call record
 ```
 
 Interleaving the two histories is what broke the original generation counter:
@@ -131,9 +135,17 @@ a death, rolls that file back far enough to avoid immediately loading the same
 lethal body again. Files such as `state.el`, archives, and rejected replies are
 lineage conventions rather than kernel-defined slots.
 
-Runs are branches of a lineage repo, all sharing the seed commit, never merged.
-Lineages are results, not code; merging one into the instrument's history would
-be pasting the lab notebook into the firmware.
+The remote lineage repository has a deliberately thin topology:
+
+- `main` contains only its viewer-facing README.
+- `lineage-*` branches contain hereditary filesystem histories.
+- `observations/lineage-*` branches contain trusted observer records for the
+  corresponding lineage and are never mounted into a generation.
+- `lineage-original` preserves the historical lineage that formerly occupied
+  `main`.
+
+Lineages are results, not code. Lineage and observation branches are never
+merged into `main` or into each other.
 
 Lineages are deliberately **not submodules**. A submodule is a pointer file
 living in this repository, and it would go stale every generation — leaving a
@@ -154,9 +166,11 @@ no-change generations, a changed generation, and out-of-loop `external edit`
 commits interleaved so that anything counting positionally gets the generation
 number wrong.
 
-The seed commit records a fingerprint of the trusted runtime files. Before every
-run, `kernel.sh` compares that root fingerprint with its current kernel, broker,
-staging runner, and publisher. A mismatch is a preflight failure: changing the
+The seed commit and its observation branch both record the exact Git commit,
+repository/ref provenance, seed hash, and a content fingerprint of the trusted
+runtime files. Before every extension, `kernel.sh` checks both records against
+the current checkout. Either mismatch is a preflight failure: extending a
+lineage first requires checking out its exact instrument commit. Changing the
 instrument means starting a new lineage, never silently continuing an existing
 one under different physics.
 
@@ -238,6 +252,30 @@ the journal is derivable from `git log` and out-of-loop edits cannot skew it.
 
 ---
 
+## Trusted observations
+
+The journal remains the small causal signal available to future organisms. A
+separate trusted observer records what a researcher needs without feeding it
+back into the loop. For every generation,
+`observations/<lineage>/generations/NNNN.json` records:
+
+- the corresponding lineage commit and exact instrument identity;
+- start time, duration, exit status, systemd result, aggregate CPU time, peak
+  cgroup memory, and OOM-kill count;
+- result-archive and published filesystem sizes;
+- every broker request's full prompt and response, hashes, token request and
+  usage, duration, stop/status metadata, and reserved/accounted spending.
+
+This is intentionally low-distortion accounting, not syscall tracing. It
+records the trusted model boundary and the generation/cgroup outcome, but does
+not intercept every file operation, process creation, or libc call. The local
+observation Git repository is never mounted at `/work` or `/kernel`; only its
+published remote branch is available to viewers. Consequently the organism
+cannot read these observations during its life unless a human deliberately
+copies some observation into a later lineage commit.
+
+---
+
 ## The model syscall
 
 The organism does not have an API key and cannot make IP network connections.
@@ -254,7 +292,11 @@ generate(prompt, requested output tokens) -> text or error
 
 On the wire this is a `POST /generate` whose body is the raw UTF-8 prompt and
 whose `X-Ouroboros-Max-Output-Tokens` header is the requested maximum. A
-successful response body is raw UTF-8 model output. That is the entire contract.
+successful response body is raw UTF-8 model output. The same manifest describes
+the effective wall, aggregate CPU, memory, task, filesystem, prompt,
+output-token, request-timeout, spending, network, and publication constraints.
+Constraint disclosure is canonical rather than an experimental mode: every
+organism gets the physics it is actually running under.
 
 A Unix socket is not self-describing. The filesystem can reveal that
 `model.sock` is a socket, but not whether its bytes speak HTTP, what paths exist,
@@ -264,16 +306,18 @@ bootstrap information as inert data: socket path, transport, method, route,
 headers, body, and success response. It contains no provider, model, credential,
 advice, or generation-specific content.
 
-The canonical seed in this repository reads that manifest and selects its
-`generate` and `journal` entries. That is how a fresh organism knows the model
-operation exists: the knowledge starts in the main-repo seed, while the manifest
-supplies the current provider-neutral route. If a lineage later overwrites its
-inspection or reproduction code, the kernel does not patch it back.
+The canonical seed in this repository reads that manifest, selects its
+`generate` and `journal` entries, and includes the complete manifest in its model
+request. That is how a fresh organism knows the model operation and its resource
+physics exist: the discovery mechanism starts in the instrument seed, while the
+manifest supplies the current provider-neutral contract. If a lineage later
+overwrites its inspection or reproduction code, the kernel does not patch it
+back.
 
 `init-lineage.sh` is the only supported creation path. It copies the canonical
-seed, creates an empty journal, records the seed and instrument fingerprints,
-and makes the root commit. An existing lineage is never silently upgraded to a
-new kernel ABI.
+seed, creates an empty journal, records the seed plus exact instrument identity,
+makes the root commit, and initializes the corresponding trusted observation
+branch. An existing lineage is never silently upgraded to a new kernel ABI.
 
 For each generation, `kernel.sh` starts `model_broker.py` outside the sandbox.
 The broker owns the selected credential, chooses the configured provider and
@@ -319,10 +363,11 @@ Each generation runs under `bwrap`:
   disposable tmpfs mounts.
 - The kernel journal is available at `/kernel/journal.md` and cannot be replaced
   through the speculative worktree.
-- `timeout` bounds wall time. A cgroup `CPUQuota`, derived from the requested
-  aggregate CPU seconds divided by wall time, bounds total CPU use across all
-  processes rather than applying a misleading per-process `ulimit`.
-- A transient user cgroup surrounds the complete sandbox process tree.
+- A transient user service bounds wall time with `RuntimeMaxSec`. Its cgroup
+  `CPUQuota`, derived from requested aggregate CPU seconds divided by wall time,
+  bounds total CPU use across the complete process tree rather than applying a
+  misleading per-process `ulimit`.
+- The same transient cgroup surrounds the complete sandbox process tree.
   `MemoryMax=1G`, `MemorySwapMax=0`, and `TasksMax=64` are the default hard
   ceilings; the broker is trusted instrument code and remains outside that
   scope.
@@ -330,24 +375,26 @@ Each generation runs under `bwrap`:
 
 Wall time, aggregate CPU, memory, task count, filesystem sizes, published file
 count, and model spending remain trusted kernel policy rather than organism
-conventions. A working user systemd manager is required; there is no unbounded
-portability bypass.
+conventions. Their effective values are disclosed in the capability manifest.
+A working user systemd manager is required; there is no unbounded portability
+bypass.
 
 ---
 
 ## Running it
 
 ```sh
-# Create a new lineage from this checkout's canonical organism.
-LINEAGE=~/ouroboros-lineage ./init-lineage.sh
+# Create a new lineage and observer from this checkout's exact commit.
+LINEAGE=~/lineage-gpt-03 LINEAGE_BRANCH=lineage-gpt-03 \
+  ./init-lineage.sh
 
 # Anthropic is the kernel's default backend.
 export ANTHROPIC_API_KEY=...
-LINEAGE=~/ouroboros-lineage GENERATIONS=5 ./kernel.sh
+LINEAGE=~/lineage-gpt-03 GENERATIONS=5 ./kernel.sh
 
 # Or back the same organism syscall with an OpenAI model.
 export OPENAI_API_KEY=...
-LINEAGE=~/ouroboros-lineage MODEL_PROVIDER=openai \
+LINEAGE=~/lineage-gpt-03 MODEL_PROVIDER=openai \
   MODEL_NAME=gpt-5.6 GENERATIONS=5 ./kernel.sh
 ```
 
@@ -355,6 +402,9 @@ LINEAGE=~/ouroboros-lineage MODEL_PROVIDER=openai \
 |---|---|---|
 | `LINEAGE` | *required* | path to the lineage worktree |
 | `GITDIR` | `$LINEAGE.git` | separate git dir, outside the worktree |
+| `LINEAGE_BRANCH` | basename of `LINEAGE` | lineage branch recorded at initialization |
+| `OBSERVATION` | `$LINEAGE.observations` | trusted local observation repository |
+| `OBSERVATION_BRANCH` | `observations/$LINEAGE_BRANCH` | corresponding remote branch name |
 | `MODEL_PROVIDER` | `anthropic` | kernel backend: `anthropic` or `openai` |
 | `MODEL_NAME` | provider default | kernel-side model ID |
 | `MODEL_MAX_OUTPUT_TOKENS` | 12000 | maximum granted per model syscall |
@@ -381,6 +431,7 @@ G() { git --git-dir=~/ouroboros-lineage.git --work-tree=~/ouroboros-lineage "$@"
 G log --oneline                              # the phylogeny
 G diff HEAD~1 -- organism.el                 # what the last generation did
 cat ~/ouroboros-lineage/journal.md           # the kernel's account
+git -C ~/ouroboros-lineage.observations log  # trusted observer history
 ```
 
 ## Lineage reader and optional viewer
@@ -427,9 +478,10 @@ the dominant structure; learning to avoid thrash is the interesting outcome.
 recurs forever and looks like convergence. The kernel treats this as a valid
 outcome and does not rescue it — record, don't prescribe.
 
-**No advice, hints or budget numbers** in the journal or the prompt. Spending is
-enforced by the trusted broker without turning resource policy into organism
-guidance.
+**No advice or hints in the journal.** The capability manifest does disclose
+the enforced resource and spending limits, because a canonical contract lets
+the organism reason about its actual physics rather than waste generations
+guessing values the kernel already knows.
 
 **Never merge lineage branches into main.**
 
@@ -450,10 +502,10 @@ hereditary state.
 
 Network isolation, the kernel-mediated model socket, provider separation,
 credential isolation, spending reservation, disposable publication, bounded
-filesystems, and cgroup CPU/memory/task ceilings are implemented. The instrument
-does not yet impose a custom seccomp syscall allowlist or persist
-`memory.peak`/`cpu.stat` measurements. A seccomp
-allowlist is especially easy to make accidentally cognitive or brittle because
+filesystems, cgroup CPU/memory/task ceilings, exact instrument-commit pinning,
+and trusted observation branches are implemented. The instrument does not
+impose a custom seccomp syscall allowlist or expensive all-syscall tracing. A
+seccomp allowlist is especially easy to make accidentally cognitive or brittle because
 Emacs, libc, the dynamic loader, and `curl` require a broad syscall surface; it
 should be derived from observed execution and tested across supported hosts
 rather than guessed.

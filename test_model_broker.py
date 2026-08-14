@@ -163,7 +163,13 @@ class BackendTests(unittest.TestCase):
 class CapabilityManifestTests(unittest.TestCase):
     def test_manifest_describes_only_the_provider_neutral_abi(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = model_broker.write_capability_manifest(Path(directory))
+            constraints = {
+                "disclosure": "canonical",
+                "generation": {"wall_seconds": 600},
+            }
+            path = model_broker.write_capability_manifest(
+                Path(directory), constraints
+            )
             manifest = json.loads(path.read_text(encoding="utf-8"))
             serialized = json.dumps(manifest).lower()
 
@@ -177,6 +183,7 @@ class CapabilityManifestTests(unittest.TestCase):
             self.assertEqual(
                 manifest["capabilities"][1]["path"], "/kernel/journal.md"
             )
+            self.assertEqual(manifest["constraints"], constraints)
             self.assertNotIn("anthropic", serialized)
             self.assertNotIn("openai", serialized)
             self.assertNotIn("secret", serialized)
@@ -210,10 +217,13 @@ class ProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.socket_path = str(Path(self.tempdir.name) / "model.sock")
+        self.audit_path = Path(self.tempdir.name) / "audit.jsonl"
         self.backend = FakeBackend()
+        self.audit = model_broker.AuditRecorder(self.audit_path, 7)
         try:
             self.server = model_broker.UnixHTTPServer(
-                self.socket_path, model_broker.make_handler(self.backend, 1024)
+                self.socket_path,
+                model_broker.make_handler(self.backend, 1024, self.audit),
             )
         except PermissionError as exc:
             self.tempdir.cleanup()
@@ -245,6 +255,12 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual((status, body), (200, b"next organism"))
         self.assertEqual(self.backend.calls, [("my prompt", 321)])
+        record = json.loads(self.audit_path.read_text().splitlines()[-1])
+        self.assertEqual(record["generation"], 7)
+        self.assertEqual(record["prompt"], "my prompt")
+        self.assertEqual(record["response"], "next organism")
+        self.assertEqual(record["http_status"], 200)
+        self.assertEqual(len(record["prompt_sha256"]), 64)
 
     def test_rejects_unknown_operations_and_invalid_token_requests(self) -> None:
         self.assertEqual(self.request("POST", "/provider")[0], 404)
@@ -265,7 +281,7 @@ class ProtocolTests(unittest.TestCase):
         Path(self.socket_path).unlink(missing_ok=True)
         self.server = model_broker.UnixHTTPServer(
             self.socket_path,
-            model_broker.make_handler(ExhaustedBackend(), 1024),
+            model_broker.make_handler(ExhaustedBackend(), 1024, self.audit),
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
