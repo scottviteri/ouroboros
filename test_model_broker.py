@@ -5,12 +5,20 @@ from __future__ import annotations
 import http.client
 import json
 import socket
+import stat
 import tempfile
 import threading
 import unittest
+from decimal import Decimal
 from pathlib import Path
 
 import model_broker
+
+
+def spending_ledger(budget: str = "10.00") -> model_broker.SpendingLedger:
+    return model_broker.SpendingLedger(
+        Decimal(budget), Decimal("5.00"), Decimal("30.00")
+    )
 
 
 class FakeResponse:
@@ -36,6 +44,7 @@ class BackendTests(unittest.TestCase):
             captured["timeout"] = timeout
             return FakeResponse(
                 {
+                    "usage": {"input_tokens": 10, "output_tokens": 20},
                     "output": [
                         {"type": "reasoning", "summary": []},
                         {
@@ -50,7 +59,13 @@ class BackendTests(unittest.TestCase):
             )
 
         backend = model_broker.ModelBackend(
-            "openai", "gpt-5.6", "openai-secret", 12000, 37, opener
+            "openai",
+            "gpt-5.6",
+            "openai-secret",
+            12000,
+            37,
+            spending_ledger(),
+            opener,
         )
         self.assertEqual(backend.generate("prompt", 99999), "first second")
 
@@ -70,11 +85,20 @@ class BackendTests(unittest.TestCase):
         def opener(request, timeout):
             captured["request"] = request
             return FakeResponse(
-                {"content": [{"type": "text", "text": "successor"}]}
+                {
+                    "usage": {"input_tokens": 9, "output_tokens": 4},
+                    "content": [{"type": "text", "text": "successor"}],
+                }
             )
 
         backend = model_broker.ModelBackend(
-            "anthropic", "claude-opus-5", "anthropic-secret", 12000, 40, opener
+            "anthropic",
+            "claude-opus-4-8",
+            "anthropic-secret",
+            12000,
+            40,
+            spending_ledger(),
+            opener,
         )
         self.assertEqual(backend.generate("prompt", 8000), "successor")
 
@@ -84,11 +108,78 @@ class BackendTests(unittest.TestCase):
             request.full_url, "https://api.anthropic.com/v1/messages"
         )
         self.assertEqual(request.get_header("X-api-key"), "anthropic-secret")
-        self.assertEqual(body["model"], "claude-opus-5")
+        self.assertEqual(body["model"], "claude-opus-4-8")
         self.assertEqual(body["max_tokens"], 8000)
         self.assertEqual(
             body["messages"], [{"role": "user", "content": "prompt"}]
         )
+
+    def test_dollar_budget_is_reserved_before_provider_call(self) -> None:
+        called = False
+
+        def opener(_request, timeout):
+            del timeout
+            nonlocal called
+            called = True
+            raise AssertionError("provider must not be called")
+
+        backend = model_broker.ModelBackend(
+            "openai",
+            "gpt-5.6",
+            "openai-secret",
+            12000,
+            37,
+            spending_ledger("0.01"),
+            opener,
+        )
+        with self.assertRaises(model_broker.BudgetExceeded):
+            backend.generate("prompt", 12000)
+        self.assertFalse(called)
+
+    def test_provider_usage_refunds_unused_reservation(self) -> None:
+        def opener(_request, timeout):
+            del timeout
+            return FakeResponse(
+                {
+                    "usage": {"input_tokens": 10, "output_tokens": 10},
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "ok"}],
+                        }
+                    ],
+                }
+            )
+
+        ledger = spending_ledger("0.40")
+        backend = model_broker.ModelBackend(
+            "openai", "gpt-5.6", "secret", 12000, 37, ledger, opener
+        )
+        self.assertEqual(backend.generate("prompt", 12000), "ok")
+        self.assertGreater(ledger.remaining_usd, Decimal("0.39"))
+        self.assertEqual(backend.generate("prompt", 12000), "ok")
+
+
+class CapabilityManifestTests(unittest.TestCase):
+    def test_manifest_describes_only_the_provider_neutral_abi(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = model_broker.write_capability_manifest(Path(directory))
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            serialized = json.dumps(manifest).lower()
+
+            self.assertEqual(path.name, "capabilities.json")
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o444)
+            self.assertEqual(manifest["capabilities"][0]["name"], "generate")
+            self.assertEqual(
+                manifest["capabilities"][0]["socket"], "/kernel/model.sock"
+            )
+            self.assertEqual(manifest["capabilities"][1]["name"], "journal")
+            self.assertEqual(
+                manifest["capabilities"][1]["path"], "/kernel/journal.md"
+            )
+            self.assertNotIn("anthropic", serialized)
+            self.assertNotIn("openai", serialized)
+            self.assertNotIn("secret", serialized)
 
 
 class FakeBackend:
@@ -98,6 +189,11 @@ class FakeBackend:
     def generate(self, prompt: str, requested_tokens: int) -> str:
         self.calls.append((prompt, requested_tokens))
         return "next organism"
+
+
+class ExhaustedBackend:
+    def generate(self, _prompt: str, _requested_tokens: int) -> str:
+        raise model_broker.BudgetExceeded("generation spending budget exhausted")
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
@@ -129,6 +225,7 @@ class ProtocolTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
+        Path(self.socket_path).unlink(missing_ok=True)
         self.tempdir.cleanup()
 
     def request(self, method: str, path: str, body: bytes = b"", **headers: str):
@@ -160,6 +257,26 @@ class ProtocolTests(unittest.TestCase):
             )[0],
             400,
         )
+
+    def test_reports_generation_budget_exhaustion_without_provider_details(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        Path(self.socket_path).unlink(missing_ok=True)
+        self.server = model_broker.UnixHTTPServer(
+            self.socket_path,
+            model_broker.make_handler(ExhaustedBackend(), 1024),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        status, body = self.request(
+            "POST",
+            "/generate",
+            b"prompt",
+            **{"X-Ouroboros-Max-Output-Tokens": "100"},
+        )
+        self.assertEqual(status, 402)
+        self.assertEqual(body, b"generation budget exhausted\n")
 
 
 if __name__ == "__main__":

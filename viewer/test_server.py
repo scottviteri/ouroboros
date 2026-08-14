@@ -1,9 +1,11 @@
+import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from server import ALLOWED_GIT_COMMANDS, LineageRepository, resolve_paths
+from lineage_reader import ALLOWED_GIT_COMMANDS, LineageRepository, resolve_paths
 
 
 HERE = Path(__file__).resolve().parent
@@ -48,6 +50,7 @@ class LineageRepositoryTests(unittest.TestCase):
         details = self.repository.generation_details(self.generation(1).sha)
         self.assertEqual(details["exit_code"], 255)
         self.assertIn('error("boom")', details["stderr_tail"])
+        self.assertIn('(error "boom")', details["failed_organism"])
         self.assertIn("gen 1 — died", details["journal"]["heading"])
 
     def test_changed_generation_has_organism_diff(self):
@@ -77,10 +80,47 @@ class LineageRepositoryTests(unittest.TestCase):
         self.assertIn("state.el", result["files"])
         self.assertTrue(result["diff"])
 
+    def test_generation_can_be_selected_by_number_or_sha_prefix(self):
+        generation = self.generation(2)
+        self.assertEqual(self.repository.generation("2"), generation)
+        self.assertEqual(self.repository.generation(generation.sha[:10]), generation)
+
+    def test_fixture_satisfies_recording_contract(self):
+        result = self.repository.verify()
+        self.assertTrue(result["valid"], result["errors"])
+        self.assertEqual(result["generation_count"], 5)
+
     def test_summary_indexes_state_and_rejected_artifacts(self):
         artifacts = self.repository.summary()["artifacts"]
         self.assertEqual({item["kind"] for item in artifacts}, {"state", "rejected"})
         self.assertTrue(all(item["generation"] == 5 for item in artifacts))
+
+    def test_kernel_external_edit_subject_is_context_not_a_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worktree = Path(directory) / "sample"
+            subprocess.run(
+                ["git", "clone", "-q", str(FIXTURE), str(worktree)], check=True
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(worktree),
+                    "-c",
+                    "user.name=Lineage Reader Test",
+                    "-c",
+                    "user.email=lineage-reader@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    "external edit",
+                ],
+                check=True,
+            )
+            resolved_worktree, resolved_git_dir = resolve_paths(str(worktree), None)
+            repository = LineageRepository(resolved_worktree, resolved_git_dir)
+            self.assertEqual(repository.commits[-1].kind, "external")
+            self.assertEqual(len(repository.generations), 5)
 
     def test_viewer_does_not_dirty_fixture_clone(self):
         self.repository.summary()
@@ -137,6 +177,31 @@ class PathResolutionTests(unittest.TestCase):
             ALLOWED_GIT_COMMANDS,
             {"log", "show", "diff", "cat-file", "rev-list"},
         )
+
+
+class LineageReaderCliTests(unittest.TestCase):
+    def test_summary_and_verify_are_available_without_the_web_viewer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worktree = Path(directory) / "sample"
+            subprocess.run(
+                ["git", "clone", "-q", str(FIXTURE), str(worktree)], check=True
+            )
+            reader = HERE / "lineage_reader.py"
+            summary = subprocess.run(
+                [sys.executable, str(reader), str(worktree), "summary"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+            verified = subprocess.run(
+                [sys.executable, str(reader), str(worktree), "verify"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+
+            self.assertEqual(json.loads(summary.stdout)["generation_count"], 5)
+            self.assertTrue(json.loads(verified.stdout)["valid"])
 
 
 if __name__ == "__main__":

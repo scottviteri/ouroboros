@@ -1,14 +1,20 @@
-# Lineage viewer
+# Lineage reader and viewer
 
-A small, read-only browser for an ouroboros lineage. It shows the complete
-recorded timeline, generation diffs, matching journal entries, state changes,
-and rejected successors. Out-of-loop context and `external edit` commits remain
-visible but are not assigned generation numbers.
+`lineage_reader.py` is the read-only interpretation layer for an ouroboros
+lineage. `server.py` is an optional browser over that reader. Both understand
+the complete timeline, generation diffs, matching journal entries, state
+changes, rejected successors, and the committed boot source behind each death.
+Out-of-loop context and `external edit` commits remain visible but are not
+assigned generation numbers.
 
 Try it with the frozen fixture:
 
 ```sh
 git clone viewer/testdata/sample-lineage.bundle /tmp/sample
+python3 viewer/lineage_reader.py /tmp/sample summary
+python3 viewer/lineage_reader.py /tmp/sample generation 5
+python3 viewer/lineage_reader.py /tmp/sample compare 1 5
+python3 viewer/lineage_reader.py /tmp/sample verify
 python3 viewer/server.py /tmp/sample
 ```
 
@@ -20,10 +26,10 @@ needed:
 python3 viewer/server.py /path/to/worktree --git-dir /path/to/lineage.git
 ```
 
-The server does not write to the worktree or git directory. Its Git wrapper
-sets `GIT_OPTIONAL_LOCKS=0`, disables external diff helpers, supplies
-`--git-dir` and `--work-tree` explicitly, and rejects commands outside the
-read-only `log`, `show`, `diff`, `cat-file`, and `rev-list` allowlist.
+The reader and server do not write to the worktree or git directory. Their
+shared Git wrapper sets `GIT_OPTIONAL_LOCKS=0`, disables external diff helpers,
+supplies `--git-dir` and `--work-tree` explicitly, and rejects commands outside
+the read-only `log`, `show`, `diff`, `cat-file`, and `rev-list` allowlist.
 
 Run the fixture-backed tests with:
 
