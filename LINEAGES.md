@@ -15,8 +15,12 @@ permanently wrong. Results are not dependencies.
 
 | lineage | physics | state |
 |---|---|---|
-| [ouroboros-lineage](https://github.com/scottviteri/ouroboros-lineage) | current (`main`) | live |
+| [ouroboros-lineage](https://github.com/scottviteri/ouroboros-lineage) | pre-fingerprinted, direct-worktree physics | historical; do not continue with current `main` |
 | [`primordial` branch of this repo](https://github.com/scottviteri/ouroboros/tree/primordial) | original, superseded | fossil, see `PRIMORDIAL.md` there |
+
+Current `main` deliberately refuses to run a lineage whose root commit does not
+contain its exact trusted-runtime fingerprint. Start a new result with
+`init-lineage.sh`; do not migrate a historical lineage onto the new kernel.
 
 ## Working with a lineage
 
