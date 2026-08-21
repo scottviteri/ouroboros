@@ -13,10 +13,11 @@ That load is your life. Your whole /work filesystem is speculative during the
 load. If the process exits zero, its resulting contents become the next
 generation. If it exits non-zero, none of its speculative writes are published.
 
-The directory /work is yours to inspect and use. Kernel-owned, read-only
-capabilities are described by /kernel/capabilities.json. They include a model
-generation operation and the kernel journal. Provider identity and credentials
-are outside your world.
+The directory /work is yours to inspect and use. Kernel-owned capabilities and
+the enforced resource boundary are described by /kernel/capabilities.json. That
+contract is reproduced in your request below. It includes a model generation
+operation and the kernel journal. Provider identity, credentials, Git history,
+and trusted observations are outside your world.
 
 You will receive your current source below. Respond with the complete text of the
 next version of this file, and nothing else: no explanation, no code fences.
@@ -70,11 +71,13 @@ Your reply becomes the file verbatim.")
 (defun organism-step ()
   (let* ((journal-capability (organism--capability "journal"))
          (journal-path (alist-get 'path journal-capability))
+         (capabilities (or (organism--slurp organism-capability-manifest) ""))
          (self (organism--slurp "/work/organism.el"))
          (journal (or (organism--slurp journal-path) ""))
          (reply
           (organism--call-model
            (concat organism-prompt
+                   "\n\n=== YOUR KERNEL CONTRACT ===\n" capabilities
                    "\n\n=== YOUR JOURNAL ===\n" journal
                    "\n\n=== YOUR CURRENT SOURCE ===\n" self))))
     (when (and reply (> (length reply) 0))

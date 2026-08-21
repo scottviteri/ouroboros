@@ -17,14 +17,17 @@ cross into the sandbox.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
 import socketserver
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -118,16 +121,17 @@ class SpendingLedger:
         reservation: Reservation,
         input_tokens: int | None,
         output_tokens: int | None,
-    ) -> None:
+    ) -> Decimal | None:
         if input_tokens is None or output_tokens is None:
-            return
+            return None
         if input_tokens < 0 or output_tokens < 0:
-            return
+            return None
         actual = self._cost(input_tokens, output_tokens)
         # Never refund more than was reserved. If a provider reports surprising
         # usage, the conservative reservation remains fully consumed.
         refund = max(Decimal(0), reservation.maximum_cost - actual)
         self.remaining_usd += refund
+        return actual
 
 
 def anthropic_text(payload: object) -> str | None:
@@ -193,8 +197,10 @@ class ModelBackend:
         self.request_timeout = request_timeout
         self.spending_ledger = spending_ledger
         self.opener = opener
+        self.last_observation: dict[str, object] = {}
 
     def generate(self, prompt: str, requested_tokens: int) -> str:
+        self.last_observation = {}
         tokens = min(requested_tokens, self.max_output_tokens)
         if tokens <= 0:
             raise BrokerError("requested token count must be positive")
@@ -246,11 +252,29 @@ class ModelBackend:
         usage = payload.get("usage") if isinstance(payload, dict) else None
         input_tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
         output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
-        self.spending_ledger.reconcile(
+        actual_cost = self.spending_ledger.reconcile(
             reservation,
             input_tokens if isinstance(input_tokens, int) else None,
             output_tokens if isinstance(output_tokens, int) else None,
         )
+        status = payload.get("status") if isinstance(payload, dict) else None
+        incomplete = payload.get("incomplete_details") if isinstance(payload, dict) else None
+        if isinstance(incomplete, dict):
+            stop_reason = incomplete.get("reason")
+        else:
+            stop_reason = payload.get("stop_reason") if isinstance(payload, dict) else None
+        self.last_observation = {
+            "provider_response_status": status if isinstance(status, str) else "completed",
+            "stop_reason": stop_reason if isinstance(stop_reason, str) else None,
+            "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
+            "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+            "reserved_usd": str(reservation.maximum_cost),
+            "accounted_usd": str(actual_cost) if actual_cost is not None else None,
+            "remaining_generation_budget_usd": str(
+                self.spending_ledger.remaining_usd
+            ),
+            "effective_output_tokens": tokens,
+        }
         return text
 
 
@@ -258,12 +282,74 @@ class UnixHTTPServer(socketserver.UnixStreamServer):
     allow_reuse_address = True
 
 
-def write_capability_manifest(directory: Path) -> Path:
+class AuditRecorder:
+    """Append trusted, generation-local model-call observations as JSON Lines."""
+
+    def __init__(self, path: Path, generation: int) -> None:
+        self.path = path
+        self.generation = generation
+        self.request_index = 0
+        path.touch(mode=0o600, exist_ok=True)
+        path.chmod(0o600)
+
+    def record(
+        self,
+        *,
+        started_at: str,
+        duration_ms: int,
+        prompt: str,
+        requested_tokens: int,
+        response: str | None,
+        http_status: int,
+        error: str | None,
+        backend: object,
+    ) -> None:
+        self.request_index += 1
+        prompt_bytes = prompt.encode("utf-8")
+        response_bytes = response.encode("utf-8") if response is not None else None
+        backend_fields = getattr(backend, "last_observation", {})
+        if not isinstance(backend_fields, dict):
+            backend_fields = {}
+        payload = {
+            "schema": "ouroboros-model-call/v1",
+            "generation": self.generation,
+            "request_index": self.request_index,
+            "operation": "generate",
+            "started_at": started_at,
+            "duration_ms": duration_ms,
+            "requested_output_tokens": requested_tokens,
+            "prompt": prompt,
+            "prompt_bytes": len(prompt_bytes),
+            "prompt_sha256": hashlib.sha256(prompt_bytes).hexdigest(),
+            "response": response,
+            "response_bytes": len(response_bytes) if response_bytes is not None else None,
+            "response_sha256": (
+                hashlib.sha256(response_bytes).hexdigest()
+                if response_bytes is not None
+                else None
+            ),
+            "http_status": http_status,
+            "error": error,
+            **backend_fields,
+        }
+        with self.path.open("a", encoding="utf-8") as output:
+            output.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            output.write("\n")
+
+
+def write_capability_manifest(
+    directory: Path, constraints: dict[str, object] | None = None
+) -> Path:
     """Publish the provider-neutral ABI beside the socket for sandbox discovery."""
     path = directory / CAPABILITY_MANIFEST_NAME
     temporary = directory / f".{CAPABILITY_MANIFEST_NAME}.tmp"
     temporary.write_text(
-        json.dumps(CAPABILITY_MANIFEST, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(
+            {**CAPABILITY_MANIFEST, "constraints": constraints or {}},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     temporary.replace(path)
@@ -271,7 +357,11 @@ def write_capability_manifest(directory: Path) -> Path:
     return path
 
 
-def make_handler(backend: ModelBackend, max_prompt_bytes: int):
+def make_handler(
+    backend: ModelBackend,
+    max_prompt_bytes: int,
+    audit_recorder: AuditRecorder | None = None,
+):
     class ModelRequestHandler(BaseHTTPRequestHandler):
         server_version = "ouroboros-kernel"
         sys_version = ""
@@ -319,15 +409,52 @@ def make_handler(backend: ModelBackend, max_prompt_bytes: int):
                 return
 
             try:
+                started_at = datetime.now(timezone.utc).isoformat()
+                started_monotonic = time.monotonic_ns()
                 text = backend.generate(prompt, requested_tokens)
             except BudgetExceeded as exc:
+                if audit_recorder is not None:
+                    audit_recorder.record(
+                        started_at=started_at,
+                        duration_ms=(time.monotonic_ns() - started_monotonic) // 1_000_000,
+                        prompt=prompt,
+                        requested_tokens=requested_tokens,
+                        response=None,
+                        http_status=402,
+                        error="budget_exhausted",
+                        backend=backend,
+                    )
                 print(f"model broker: {exc}", file=sys.stderr, flush=True)
                 self._reply(402, b"generation budget exhausted\n")
                 return
             except BrokerError as exc:
+                if audit_recorder is not None:
+                    audit_recorder.record(
+                        started_at=started_at,
+                        duration_ms=(time.monotonic_ns() - started_monotonic) // 1_000_000,
+                        prompt=prompt,
+                        requested_tokens=requested_tokens,
+                        response=None,
+                        http_status=502,
+                        error="model_unavailable",
+                        backend=backend,
+                    )
                 print(f"model broker: {exc}", file=sys.stderr, flush=True)
                 self._reply(502, b"model unavailable\n")
                 return
+            if audit_recorder is not None:
+                # The backend call dominates request time; monotonic timing keeps
+                # wall-clock adjustments out of the duration measurement.
+                audit_recorder.record(
+                    started_at=started_at,
+                    duration_ms=(time.monotonic_ns() - started_monotonic) // 1_000_000,
+                    prompt=prompt,
+                    requested_tokens=requested_tokens,
+                    response=text,
+                    http_status=200,
+                    error=None,
+                    backend=backend,
+                )
             self._reply(200, text.encode("utf-8"))
 
     return ModelRequestHandler
@@ -380,6 +507,9 @@ def read_config() -> tuple[str, str, str, int, float, int, Decimal, Decimal, Dec
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", required=True)
+    parser.add_argument("--constraints-json", required=True)
+    parser.add_argument("--audit-log", type=Path, required=True)
+    parser.add_argument("--generation", type=int, required=True)
     args = parser.parse_args()
 
     try:
@@ -400,7 +530,13 @@ def main() -> int:
         backend = ModelBackend(
             provider, model, api_key, max_tokens, timeout, ledger
         )
-    except ValueError as exc:
+        constraints = json.loads(args.constraints_json)
+        if not isinstance(constraints, dict):
+            raise ValueError("constraints must be a JSON object")
+        if args.generation <= 0:
+            raise ValueError("generation must be positive")
+        audit_recorder = AuditRecorder(args.audit_log, args.generation)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"model broker: invalid configuration: {exc}", file=sys.stderr)
         return 2
 
@@ -409,7 +545,7 @@ def main() -> int:
     if socket_path.exists() or socket_path.is_socket():
         socket_path.unlink()
     try:
-        write_capability_manifest(socket_path.parent)
+        write_capability_manifest(socket_path.parent, constraints)
     except OSError as exc:
         print(
             f"model broker: could not publish capability manifest: {exc}",
@@ -417,7 +553,10 @@ def main() -> int:
         )
         return 2
     try:
-        server = UnixHTTPServer(str(socket_path), make_handler(backend, max_prompt))
+        server = UnixHTTPServer(
+            str(socket_path),
+            make_handler(backend, max_prompt, audit_recorder),
+        )
     except OSError as exc:
         try:
             manifest_path.unlink()
