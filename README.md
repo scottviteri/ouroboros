@@ -264,7 +264,11 @@ back into the loop. For every generation,
   cgroup memory, and OOM-kill count;
 - result-archive and published filesystem sizes;
 - every broker request's full prompt and response, hashes, token request and
-  usage, duration, stop/status metadata, and reserved/accounted spending.
+  usage, duration, stop/status metadata, and reserved/accounted spending;
+- for a failed request, why it failed: the provider's HTTP status and
+  (truncated) error body, or the stop reason and stop details of a reply that
+  carried no text, such as a safety refusal. The organism still sees only the
+  provider-neutral `502`.
 
 This is intentionally low-distortion accounting, not syscall tracing. It
 records the trusted model boundary and the generation/cgroup outcome, but does

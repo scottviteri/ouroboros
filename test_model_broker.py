@@ -159,6 +159,51 @@ class BackendTests(unittest.TestCase):
         self.assertGreater(ledger.remaining_usd, Decimal("0.39"))
         self.assertEqual(backend.generate("prompt", 12000), "ok")
 
+    def test_refusal_is_observed_and_reconciled_but_still_502(self) -> None:
+        def opener(_request, timeout):
+            del timeout
+            return FakeResponse(
+                {
+                    "stop_reason": "refusal",
+                    "stop_details": {"type": "refusal", "category": "cyber"},
+                    "usage": {"input_tokens": 100, "output_tokens": 0},
+                    "content": [],
+                }
+            )
+
+        ledger = spending_ledger("1.00")
+        backend = model_broker.ModelBackend(
+            "anthropic", "claude-opus-5-5", "secret", 12000, 40, ledger, opener
+        )
+        with self.assertRaises(model_broker.BrokerError):
+            backend.generate("prompt", 8000)
+        observed = backend.last_observation
+        self.assertEqual(observed["stop_reason"], "refusal")
+        self.assertEqual(observed["stop_details"]["category"], "cyber")
+        self.assertEqual(observed["input_tokens"], 100)
+        self.assertGreater(ledger.remaining_usd, Decimal("0.99"))
+
+    def test_http_error_body_is_observed(self) -> None:
+        import io
+        import urllib.error
+
+        def opener(request, timeout):
+            del timeout
+            raise urllib.error.HTTPError(
+                request.full_url, 400, "Bad Request", {},
+                io.BytesIO(b'{"error":{"type":"invalid_request_error"}}'),
+            )
+
+        backend = model_broker.ModelBackend(
+            "anthropic", "claude-opus-4-8", "secret", 12000, 40,
+            spending_ledger(), opener,
+        )
+        with self.assertRaises(model_broker.BrokerError):
+            backend.generate("prompt", 8000)
+        self.assertEqual(backend.last_observation["provider_http_status"], 400)
+        self.assertIn("invalid_request_error",
+                      backend.last_observation["provider_error"])
+
 
 class CapabilityManifestTests(unittest.TestCase):
     def test_manifest_describes_only_the_provider_neutral_abi(self) -> None:

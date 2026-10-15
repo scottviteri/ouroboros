@@ -243,12 +243,33 @@ class ModelBackend:
         try:
             with self.opener(request, timeout=self.request_timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # Trusted-observation detail only; the organism still sees 502.
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:2000]
+            except OSError:
+                detail = None
+            self.last_observation = {
+                "provider_http_status": exc.code,
+                "provider_error": detail,
+                "reserved_usd": str(reservation.maximum_cost),
+                "accounted_usd": None,
+                "remaining_generation_budget_usd": str(
+                    self.spending_ledger.remaining_usd
+                ),
+                "effective_output_tokens": tokens,
+            }
+            raise BrokerError(f"backend request failed: HTTP {exc.code}") from exc
         except (OSError, UnicodeError, json.JSONDecodeError, urllib.error.URLError) as exc:
+            self.last_observation = {
+                "provider_error": type(exc).__name__,
+                "reserved_usd": str(reservation.maximum_cost),
+                "accounted_usd": None,
+                "effective_output_tokens": tokens,
+            }
             raise BrokerError(f"backend request failed: {type(exc).__name__}") from exc
 
         text = extract(payload)
-        if text is None:
-            raise BrokerError("backend returned no text")
         usage = payload.get("usage") if isinstance(payload, dict) else None
         input_tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
         output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
@@ -263,6 +284,24 @@ class ModelBackend:
             stop_reason = incomplete.get("reason")
         else:
             stop_reason = payload.get("stop_reason") if isinstance(payload, dict) else None
+        stop_details = payload.get("stop_details") if isinstance(payload, dict) else None
+        if text is None:
+            # A refusal (or any text-free reply) is recorded for the observer
+            # with its stop reason, and its usage is reconciled like a success.
+            self.last_observation = {
+                "provider_response_status": status if isinstance(status, str) else "completed",
+                "stop_reason": stop_reason if isinstance(stop_reason, str) else None,
+                "stop_details": stop_details if isinstance(stop_details, dict) else None,
+                "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
+                "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+                "reserved_usd": str(reservation.maximum_cost),
+                "accounted_usd": str(actual_cost) if actual_cost is not None else None,
+                "remaining_generation_budget_usd": str(
+                    self.spending_ledger.remaining_usd
+                ),
+                "effective_output_tokens": tokens,
+            }
+            raise BrokerError("backend returned no text")
         self.last_observation = {
             "provider_response_status": status if isinstance(status, str) else "completed",
             "stop_reason": stop_reason if isinstance(stop_reason, str) else None,
