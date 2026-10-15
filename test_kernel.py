@@ -71,6 +71,9 @@ class KernelBoundaryTests(unittest.TestCase):
 printf '%s\n' "$@" > "$KERNEL_TEST_ARGS"
 if [ "${KERNEL_TEST_BWRAP_EXIT:-0}" -ne 0 ]; then
   echo "synthetic sandbox failure" >&2
+  if [ -n "${KERNEL_TEST_BWRAP_STDERR:-}" ]; then
+    cat "$KERNEL_TEST_BWRAP_STDERR" >&2
+  fi
   exit "$KERNEL_TEST_BWRAP_EXIT"
 fi
 exec tar -C "$KERNEL_TEST_RESULT" -cf - .
@@ -308,6 +311,25 @@ esac
         self.assertEqual(observation["exit_status"], 9)
         self.assertEqual(observation["cpu_usage_nsec"], 12000000)
         self.assertEqual(observation["memory_peak_bytes"], 4194304)
+
+    def test_death_error_reaches_observer_but_journal_keeps_five_lines(self) -> None:
+        log = self.lineage.parent / "organism-stderr"
+        log.write_text(
+            "Error: wrong-type-argument (stringp nil)\n"
+            + "".join(f"  frame-{i}()\n" for i in range(12))
+        )
+        result = self.invoke(
+            KERNEL_TEST_BWRAP_EXIT="255", KERNEL_TEST_BWRAP_STDERR=str(log)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        journal = (self.lineage / "journal.md").read_text()
+        self.assertIn("frame-7()", journal)
+        self.assertNotIn("frame-6()", journal)
+        self.assertNotIn("wrong-type-argument", journal)
+        observation = json.loads(
+            (self.observation / "generations/0001.json").read_text()
+        )
+        self.assertIn("wrong-type-argument", observation["stderr"])
 
     def test_cgroup_oom_is_distinguished_from_generic_signal_death(self) -> None:
         result = self.invoke(

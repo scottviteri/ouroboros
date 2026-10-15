@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 LINEAGE_SCHEMA = "ouroboros-lineage/v2"
 OBSERVATION_SCHEMA = "ouroboros-observations/v1"
 RESERVED_TOP_LEVEL = frozenset({".git", ".ouroboros-lineage.json", "journal.md"})
+# Observations keep at most this much of the head and of the tail of stderr.
+STDERR_KEEP_BYTES = 32768
 
 
 class PublicationError(RuntimeError):
@@ -173,10 +175,21 @@ def write_generation_observation(
             if line.strip():
                 model_calls.append(json.loads(line))
     stderr_tail = ""
+    stderr = ""
+    stderr_bytes = 0
     if stderr_path.exists():
-        stderr_tail = "\n".join(stderr_path.read_text(
-            encoding="utf-8", errors="replace"
-        ).splitlines()[-20:])
+        raw = stderr_path.read_bytes()
+        stderr_bytes = len(raw)
+        stderr_tail = "\n".join(
+            raw.decode("utf-8", errors="replace").splitlines()[-20:]
+        )
+        # Observer-only: the whole error, bounded. Never mounted in a life.
+        if stderr_bytes > 2 * STDERR_KEEP_BYTES:
+            omitted = stderr_bytes - 2 * STDERR_KEEP_BYTES
+            raw = (raw[:STDERR_KEEP_BYTES]
+                   + f"\n[observer: {omitted} bytes omitted]\n".encode()
+                   + raw[-STDERR_KEEP_BYTES:])
+        stderr = raw.decode("utf-8", errors="replace")
     _write_json(
         path,
         {
@@ -184,6 +197,8 @@ def write_generation_observation(
             **fields,
             "model_calls": model_calls,
             "stderr_tail": stderr_tail,
+            "stderr": stderr,
+            "stderr_bytes": stderr_bytes,
         },
     )
 

@@ -13,6 +13,33 @@ import runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_observation_keeps_bounded_whole_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit = root / "audit.jsonl"
+            stderr = root / "stderr"
+            frames = "".join(f"  frame-{i}()\n" for i in range(50))
+            stderr.write_text("Error: wrong-type-argument (stringp nil)\n" + frames)
+            runtime.write_generation_observation(
+                root / "small.json", audit, stderr, {"generation": 1}
+            )
+            small = json.loads((root / "small.json").read_text())
+            self.assertIn("wrong-type-argument", small["stderr"])
+            self.assertNotIn("wrong-type-argument", small["stderr_tail"])
+            self.assertEqual(small["stderr_bytes"], len(stderr.read_bytes()))
+
+            keep = runtime.STDERR_KEEP_BYTES
+            stderr.write_bytes(b"E" * keep + b"M" * (3 * keep) + b"T" * keep)
+            runtime.write_generation_observation(
+                root / "large.json", audit, stderr, {"generation": 2}
+            )
+            large = json.loads((root / "large.json").read_text())
+            self.assertEqual(large["stderr_bytes"], 5 * keep)
+            self.assertTrue(large["stderr"].startswith("E" * keep))
+            self.assertTrue(large["stderr"].endswith("T" * keep))
+            self.assertIn(f"{3 * keep} bytes omitted", large["stderr"])
+            self.assertLess(len(large["stderr"]), 2 * keep + 100)
+
     def test_fingerprint_changes_with_trusted_runtime_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "kernel.sh"

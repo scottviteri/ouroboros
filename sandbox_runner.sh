@@ -20,5 +20,16 @@ if [ "$rc" -eq 0 ]; then
   exit $?
 fi
 
-tail -n 5 /run/organism.log >&2
+# Hand the kernel a bounded copy of the whole log, not just its end: Emacs
+# prints the error before the backtrace, so a deep backtrace pushes the error
+# out of any short tail. The kernel journal still takes only the last five
+# lines; the rest is for the trusted observer.
+size=$(wc -c < /run/organism.log)
+if [ "$size" -le 32768 ]; then
+  cat /run/organism.log >&2
+else
+  head -c 16384 /run/organism.log >&2
+  printf '\n[sandbox runner: %s bytes omitted]\n' "$((size - 32768))" >&2
+  tail -c 16384 /run/organism.log >&2
+fi
 exit "$rc"

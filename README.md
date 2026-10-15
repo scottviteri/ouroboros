@@ -268,7 +268,11 @@ back into the loop. For every generation,
 - for a failed request, why it failed: the provider's HTTP status and
   (truncated) error body, or the stop reason and stop details of a reply that
   carried no text, such as a safety refusal. The organism still sees only the
-  provider-neutral `502`.
+  provider-neutral `502`;
+- the life's stderr: on a death, the organism's whole Emacs output, kept whole up
+  to 64 KiB and otherwise as its first and last 32 KiB. Emacs prints the error
+  before the backtrace, so the journal's five-line tail often holds only stack
+  frames. The journal entry itself is unchanged.
 
 This is intentionally low-distortion accounting, not syscall tracing. It
 records the trusted model boundary and the generation/cgroup outcome, but does
