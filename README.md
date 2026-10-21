@@ -544,6 +544,9 @@ iterating on the conditions of its own iteration.
 
 ## Open questions
 
+- [Emacs buffer world design note](notes/emacs-buffer-world.md) records a
+  possible buffer-based variant and its inheritance boundary; it is a proposal,
+  not the current seed's behavior.
 - What is worth preserving across generations, and what is scaffolding?
 - Is editing the prompt more leveraged than editing the code?
 - Does a program with a memory of its own development behave differently from
