@@ -273,10 +273,11 @@ class ModelBackend:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             # Trusted-observation detail only; the organism still sees 502.
-            try:
-                detail = exc.read().decode("utf-8", "replace")[:2000]
-            except OSError:
-                detail = None
+            with exc:
+                try:
+                    detail = exc.read().decode("utf-8", "replace")[:2000]
+                except OSError:
+                    detail = None
             self.last_observation = {
                 "provider_http_status": exc.code,
                 "provider_error": detail,
