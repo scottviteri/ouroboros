@@ -54,7 +54,7 @@ CAPABILITY_MANIFEST = {
             "success": {"status": 200, "body": "raw UTF-8 generated text"},
             "errors": {
                 "400": "invalid request",
-                "402": "generation spending budget exhausted",
+                "402": "request worst-case cost exceeds remaining generation budget",
                 "502": "model unavailable",
             },
         },
@@ -112,9 +112,37 @@ class SpendingLedger:
             prompt_bytes + self.INPUT_OVERHEAD_TOKENS, output_tokens
         )
         if maximum > self.remaining_usd:
-            raise BudgetExceeded("generation spending budget exhausted")
+            raise BudgetExceeded(
+                "request worst-case cost exceeds remaining generation budget"
+            )
         self.remaining_usd -= maximum
         return Reservation(maximum)
+
+    def admission_disclosure(
+        self, max_prompt_bytes: int, max_output_tokens: int
+    ) -> dict[str, object]:
+        """Describe the exact admission rule using the configured prices."""
+        affordable_bytes = (
+            (
+                self.budget_usd * self.TOKEN_DENOMINATOR
+                - Decimal(max_output_tokens) * self.output_usd_per_mtok
+            ) // self.input_usd_per_mtok
+            - self.INPUT_OVERHEAD_TOKENS
+        )
+        return {
+            "rule": "worst-case request cost must fit remaining generation budget",
+            "worst_case_input_units": "UTF-8 prompt bytes + input_overhead_units",
+            "input_overhead_units": self.INPUT_OVERHEAD_TOKENS,
+            "output_units": "min(requested output tokens, max_output_tokens_per_request)",
+            "input_usd_per_mtok": str(self.input_usd_per_mtok),
+            "output_usd_per_mtok": str(self.output_usd_per_mtok),
+            "max_prompt_bytes_at_max_output_tokens": (
+                min(max_prompt_bytes, int(affordable_bytes))
+                if affordable_bytes >= 0
+                else None
+            ),
+            "ceiling_applies_at": "start of generation, before any model calls",
+        }
 
     def reconcile(
         self,
@@ -464,7 +492,10 @@ def make_handler(
                         backend=backend,
                     )
                 print(f"model broker: {exc}", file=sys.stderr, flush=True)
-                self._reply(402, b"generation budget exhausted\n")
+                self._reply(
+                    402,
+                    b"request worst-case cost exceeds remaining generation budget\n",
+                )
                 return
             except BrokerError as exc:
                 if audit_recorder is not None:
@@ -572,6 +603,12 @@ def main() -> int:
         constraints = json.loads(args.constraints_json)
         if not isinstance(constraints, dict):
             raise ValueError("constraints must be a JSON object")
+        model_constraints = constraints.get("model")
+        if not isinstance(model_constraints, dict):
+            raise ValueError("constraints must include model limits")
+        model_constraints["request_admission"] = ledger.admission_disclosure(
+            max_prompt, max_tokens
+        )
         if args.generation <= 0:
             raise ValueError("generation must be positive")
         audit_recorder = AuditRecorder(args.audit_log, args.generation)

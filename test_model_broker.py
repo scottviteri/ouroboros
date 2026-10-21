@@ -36,6 +36,24 @@ class FakeResponse:
 
 
 class BackendTests(unittest.TestCase):
+    def test_disclosed_admission_ceiling_matches_reservation(self) -> None:
+        ledger = model_broker.SpendingLedger(
+            Decimal("1.00"), Decimal("15"), Decimal("75")
+        )
+        disclosed = ledger.admission_disclosure(196608, 4096)
+        self.assertEqual(disclosed["input_overhead_units"], 4096)
+        self.assertEqual(disclosed["input_usd_per_mtok"], "15")
+        self.assertEqual(disclosed["output_usd_per_mtok"], "75")
+        ceiling = disclosed["max_prompt_bytes_at_max_output_tokens"]
+        self.assertEqual(ceiling, 42090)
+        ledger.reserve(ceiling, 4096)
+
+        next_ledger = model_broker.SpendingLedger(
+            Decimal("1.00"), Decimal("15"), Decimal("75")
+        )
+        with self.assertRaises(model_broker.BudgetExceeded):
+            next_ledger.reserve(ceiling + 1, 4096)
+
     def test_openai_request_is_capped_and_extracts_all_output_text(self) -> None:
         captured: dict[str, object] = {}
 
@@ -337,7 +355,9 @@ class ProtocolTests(unittest.TestCase):
             **{"X-Ouroboros-Max-Output-Tokens": "100"},
         )
         self.assertEqual(status, 402)
-        self.assertEqual(body, b"generation budget exhausted\n")
+        self.assertEqual(
+            body, b"request worst-case cost exceeds remaining generation budget\n"
+        )
 
 
 if __name__ == "__main__":

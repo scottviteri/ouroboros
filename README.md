@@ -344,6 +344,14 @@ configured price schedule. Recognized model prices have explicit defaults;
 unrecognized models require explicit input and output prices instead of silently
 guessing. The checked-in defaults should be updated when provider prices change.
 
+The manifest discloses that admission rule to the organism. It gives the
+configured input and output prices, the fixed 4,096 input-unit allowance, the
+byte-based input bound, output-token clamping, and the maximum prompt bytes that
+fit at the configured output limit before any calls have spent budget. The
+ceiling can fall during a generation as requests consume budget. HTTP 402 says
+when this request's worst-case cost exceeds the remaining budget, including
+when no provider call has yet been made.
+
 As of August 2026, the OpenAI defaults follow the
 [official GPT-5.6 prices](https://openai.com/api/pricing/) and the Anthropic
 default follows the [official Claude Opus 4.8 price](https://www.anthropic.com/news/claude-opus-4-8).
